@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="SunWatch">
+<meta name="theme-color" content="#f7f5f0">
+<title>SunWatch</title>
+<style>
+/* ---- tokens -------------------------------------------------------
+   paper  #f7f5f0  sun-bleached card stock, readable at full brightness
+   ink    #14120e  near-black, all type
+   rule   #d8d3c7  hairlines
+   store  #2b3a67  indigo = vitamin D in the reservoir (cool = stored)
+   UV/MED scale: the WHO-style functional ramp, the only other colour.
+   Exposure runs hot, storage runs cool. Nothing is decorative.        */
+:root{
+  --paper:#f7f5f0; --card:#fffefb; --ink:#14120e; --ink2:#6b6558;
+  --rule:#d8d3c7; --store:#2b3a67; --store-l:#e6e9f2;
+  --u1:#2e8b3f; --u2:#8fae1b; --u3:#d99b00; --u4:#e2621b; --u5:#c9243f;
+  --pad:18px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--paper);color:var(--ink);
+  font:400 16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-text-size-adjust:100%;overscroll-behavior-y:none}
+body{padding-bottom:calc(64px + env(safe-area-inset-bottom))}
+.num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+h1{font:600 19px/1 system-ui;letter-spacing:-.01em;margin:0}
+.eyebrow{font:600 10.5px/1 system-ui;letter-spacing:.14em;text-transform:uppercase;color:var(--ink2)}
+
+/* ---- chrome ---- */
+header{position:sticky;top:0;z-index:20;background:var(--paper);
+  padding:calc(10px + env(safe-area-inset-top)) var(--pad) 10px;
+  border-bottom:1px solid var(--rule);display:flex;align-items:baseline;
+  justify-content:space-between;gap:10px}
+header .sub{font:400 12px/1 system-ui;color:var(--ink2)}
+main{padding:var(--pad) var(--pad) 26px;max-width:520px;margin:0 auto}
+nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;
+  grid-template-columns:repeat(4,1fr);background:var(--card);
+  border-top:1px solid var(--rule);padding-bottom:env(safe-area-inset-bottom)}
+nav button{appearance:none;border:0;background:none;padding:9px 0 8px;
+  font:600 10.5px/1.5 system-ui;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink2);display:flex;flex-direction:column;align-items:center;gap:3px}
+nav button .g{font-size:19px;line-height:1}
+nav button[aria-current="page"]{color:var(--ink)}
+nav button[aria-current="page"] .g{transform:translateY(-1px)}
+
+/* ---- surfaces ---- */
+.card{background:var(--card);border:1px solid var(--rule);border-radius:14px;
+  padding:16px;margin-bottom:14px}
+.card.flush{padding:0;overflow:hidden}
+.hr{height:1px;background:var(--rule);margin:14px -16px}
+
+/* ---- the signature: flip countdown ---- */
+.count{text-align:center;padding:10px 0 4px}
+.count .big{font:600 84px/.86 ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums;letter-spacing:-.05em;display:block}
+.count .cap{font:600 11px/1 system-ui;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink2);margin-top:9px;display:block}
+.count.hot .big{color:var(--u5)}
+.count .at{font:400 13px/1 system-ui;color:var(--ink2);margin-top:7px;display:block}
+
+/* ---- readouts ---- */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--rule)}
+.grid>div{background:var(--card);padding:12px 14px}
+.grid .k{font:600 10px/1 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)}
+.grid .v{font:600 25px/1.1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums;letter-spacing:-.03em;margin-top:6px}
+.grid .v i{font:400 12px/1 system-ui;color:var(--ink2);font-style:normal;margin-left:3px}
+
+/* ---- dose bars ---- */
+.z{margin:13px 0}
+.z:first-child{margin-top:4px}
+.zl{display:flex;justify-content:space-between;align-items:baseline;
+  font-size:14px;margin-bottom:5px;gap:8px}
+.zl b{font-weight:600}
+.zl .r{font:500 12.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums;color:var(--ink2);white-space:nowrap}
+.zl .now{font:600 10px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink);border:1px solid var(--ink);border-radius:3px;padding:2px 4px;margin-left:6px}
+.track{height:12px;background:#ece8de;border-radius:2px;overflow:hidden}
+.track i{display:block;height:100%;border-radius:2px;transition:width .4s linear}
+.z.off .zl b,.z.off .r{color:var(--ink2)}
+.zbtn{display:block;width:100%;text-align:left;background:none;border:0;padding:0;
+  font:inherit;color:inherit;margin:15px 0}
+.zbtn.cov{opacity:.5}
+.zbtn.cov .track{background:#f0ede5}
+.zl .cvd{font:600 10px/1 system-ui;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink2);border:1px solid var(--rule);border-radius:3px;padding:2px 4px;margin-left:6px}
+.grid .sidec .v{font-size:21px}
+.grid .sidec.live{background:#fdf7ee}
+.grid .sidec.live .k{color:var(--ink)}
+
+/* ---- banners ---- */
+.ban{border-radius:12px;padding:14px 15px;margin:0 0 14px;font-size:15px;font-weight:600;
+  display:flex;gap:11px;align-items:flex-start;line-height:1.35}
+.ban .g{font-size:20px;line-height:1.1}
+.ban.flip{background:#e8f3ea;border:1.5px solid var(--u1);color:#1c5a2a}
+.ban.scr{background:#fdf0e2;border:1.5px solid var(--u4);color:#8a3c08}
+.ban.burn{background:#fdeaed;border:1.5px solid var(--u5);color:#8c1226}
+.ban span small{display:block;font-weight:400;font-size:13px;margin-top:3px;opacity:.85}
+
+/* ---- controls ---- */
+label.f{display:block;margin-bottom:13px}
+label.f>span{display:block;font:600 10.5px/1 system-ui;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink2);margin-bottom:6px}
+input,select,textarea{width:100%;font:400 16px/1.2 system-ui;color:var(--ink);
+  background:var(--paper);border:1px solid var(--rule);border-radius:9px;padding:11px 12px;appearance:none}
+input.num,select.num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+select{background-image:linear-gradient(45deg,transparent 50%,var(--ink2) 50%),
+  linear-gradient(135deg,var(--ink2) 50%,transparent 50%);
+  background-position:calc(100% - 19px) 50%,calc(100% - 14px) 50%;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:36px}
+input:focus-visible,select:focus-visible,button:focus-visible,textarea:focus-visible{
+  outline:2.5px solid var(--store);outline-offset:2px}
+.btn{appearance:none;width:100%;border:1.5px solid var(--ink);background:var(--ink);
+  color:var(--paper);font:600 16px/1 system-ui;border-radius:11px;padding:16px;
+  letter-spacing:.01em}
+.btn.ghost{background:none;color:var(--ink)}
+.btn.warn{background:var(--u4);border-color:var(--u4);color:#fff}
+.btn.stop{background:none;border-color:var(--u5);color:var(--u5)}
+.btn.sm{padding:12px;font-size:14.5px}
+.btn:active{transform:translateY(1px)}
+.row{display:flex;gap:9px;margin-bottom:9px}
+.row>*{flex:1;min-width:0}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chips button{appearance:none;background:var(--paper);border:1px solid var(--rule);
+  border-radius:20px;padding:9px 13px;font:500 14px/1 system-ui;color:var(--ink)}
+.chips button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.zsel{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.zsel button{appearance:none;text-align:left;background:var(--paper);border:1px solid var(--rule);
+  border-radius:9px;padding:11px 12px;font:500 14px/1.2 system-ui;color:var(--ink);
+  display:flex;justify-content:space-between;align-items:center;gap:6px}
+.zsel button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.zsel button::after{content:"";width:8px;height:8px;border-radius:50%;
+  border:1.5px solid var(--rule);flex:none}
+.zsel button[aria-pressed="true"]::after{background:var(--paper);border-color:var(--paper)}
+.hint{font-size:13px;line-height:1.5;color:var(--ink2);margin:9px 0 0}
+.hint b{color:var(--ink);font-weight:600}
+
+/* ---- ledger table ---- */
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{font:600 9.5px/1 system-ui;letter-spacing:.11em;text-transform:uppercase;color:var(--ink2);
+  text-align:right;padding:12px 14px 8px;border-bottom:1px solid var(--rule)}
+th:first-child{text-align:left}
+td{text-align:right;padding:11px 14px;border-bottom:1px solid #edeae1}
+td:first-child{text-align:left}
+tr:last-child td{border-bottom:0}
+td.n{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+td .d{font-weight:600}
+td .lab{display:block;font-size:12px;color:var(--ink2);margin-top:2px}
+.tag{display:inline-block;font:600 9px/1 system-ui;letter-spacing:.09em;text-transform:uppercase;
+  padding:3px 5px;border-radius:3px;vertical-align:1px;margin-left:5px}
+.tag.sun{background:#fdf0e2;color:#8a3c08}
+.tag.sup{background:var(--store-l);color:var(--store)}
+.tag.diet{background:#e8f3ea;color:#1c5a2a}
+tfoot td{border-top:1.5px solid var(--ink);border-bottom:0;font-weight:600;padding-top:13px}
+canvas{display:block;width:100%;height:190px}
+.del{appearance:none;background:none;border:0;color:var(--ink2);font-size:17px;padding:4px 0 4px 10px}
+.empty{text-align:center;padding:34px 16px}
+.empty p{color:var(--ink2);font-size:14px;margin:8px 0 18px}
+.toast{position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom));
+  transform:translateX(-50%);background:var(--ink);color:var(--paper);font:500 14px/1.3 system-ui;
+  padding:12px 18px;border-radius:22px;z-index:60;max-width:88%;text-align:center;
+  opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.on{opacity:1}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header><div><h1 id="ttl">The tank</h1><div class="sub" id="sub"></div></div>
+  <div class="eyebrow" id="hdr-r"></div></header>
+<main id="view"></main>
+<nav>
+  <button data-t="tank"><span class="g">▲</span>Tank</button>
+  <button data-t="sun"><span class="g">☀</span>Session</button>
+  <button data-t="add"><span class="g">＋</span>Add</button>
+  <button data-t="set"><span class="g">≡</span>Setup</button>
+</nav>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ==================================================================
+   SunWatch — offline, on-device. No account, no server, no upload.
+   Engine ported verbatim from the validated Python model:
+     15-day half-life reservoir, saturating synthesis, per-zone MED.
+   ================================================================== */
+
+/* ---- constants ---------------------------------------------------- */
+const HALF=15, RET=Math.pow(0.5,1/HALF), TURN=1-RET, SS=1/TURN;
+const VMAX=18000, ALPHA=1.5;
+const MED={I:200,II:250,III:350,IV:450,V:600,VI:1000};
+const NM_LO=0.00045, NM_HI=0.0011;
+const FLIP_AT=0.5, SCREEN_AT=0.7, BURN_AT=1.0;
+const ZONES={
+  face:{a:"front",area:.045,n:"Face"},        chest:{a:"front",area:.18,n:"Torso front"},
+  farms:{a:"front",area:.045,n:"Arms front"}, fthigh:{a:"front",area:.05,n:"Thighs front"},
+  fshin:{a:"front",area:.045,n:"Shins"},      back:{a:"back",area:.18,n:"Back"},
+  barms:{a:"back",area:.045,n:"Arms back"},   bthigh:{a:"back",area:.05,n:"Thighs back"},
+  bcalf:{a:"back",area:.045,n:"Calves"}
+};
+const CLOUD=[["clear","Clear",1.00],["few","1–2/8",0.95],["scat","3–4/8",0.85],
+             ["brok","5–7/8",0.62],["over","Overcast",0.35],["dark","Dark / rain",0.18]];
+const CT=Object.fromEntries(CLOUD.map(c=>[c[0],c[2]]));
+const SEED=[["2026-06-18",9900,"sun","beach, full body"],["2026-07-14",4350,"sun","lake, reclined"],
+            ["2026-07-21",3150,"sun","Damhussøen"],["2026-07-29",4063,"sun","session"],
+            ["2026-07-30",5200,"sun","session + 5 min front top-up"]];
+
+/* ---- state ------------------------------------------------------- */
+const KEY="sunwatch.v1";
+let S=load();
+function load(){
+  try{const r=JSON.parse(localStorage.getItem(KEY)); if(r&&r.p) return r;}catch(e){}
+  return {p:{skin:"IV",lat:55.686,lon:12.481,tz:2,peak:0,base:0,posture:"reclined"},
+          dep:SEED.map(d=>({date:d[0],iu:d[1],src:d[2],lab:d[3]})), s:null};
+}
+let saveT=0;
+function save(now){
+  if(!now && Date.now()-saveT<3000) return; saveT=Date.now();
+  try{localStorage.setItem(KEY,JSON.stringify(S));}
+  catch(e){toast("Storage full — export a backup from Setup.");}
+}
+
+/* ---- solar + UV (NOAA simplified, as in the Python engine) -------- */
+function doy(d){return Math.round((Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())
+  -Date.UTC(d.getFullYear(),0,0))/864e5);}
+function elevation(d,hr,tz,lat,lon){
+  const f=2*Math.PI/365*(doy(d)-1+(hr-12)/24);
+  const eq=229.18*(7.5e-5+.001868*Math.cos(f)-.032077*Math.sin(f)
+        -.014615*Math.cos(2*f)-.040849*Math.sin(2*f));
+  const dec=.006918-.399912*Math.cos(f)+.070257*Math.sin(f)-.006758*Math.cos(2*f)
+        +.000907*Math.sin(2*f)-.002697*Math.cos(3*f)+.00148*Math.sin(3*f);
+  const tst=hr*60+eq+4*lon-60*tz, ha=(tst/4-180)*Math.PI/180, la=lat*Math.PI/180;
+  const cz=Math.sin(la)*Math.sin(dec)+Math.cos(la)*Math.cos(dec)*Math.cos(ha);
+  return Math.asin(Math.max(-1,Math.min(1,cz)))*180/Math.PI;
+}
+function clearsky(e){return e<=0?0:9.7*Math.pow(Math.sin(e*Math.PI/180),1.95);}
+function calib(d){ // rescale the curve to a forecast peak UVI, if given
+  const p=S.p; if(!(p.peak>0)) return 1;
+  let best=0; for(let m=0;m<1440;m+=4){const e=elevation(d,m/60,p.tz,p.lat,p.lon); if(e>best)best=e;}
+  const b=clearsky(best); return b>0?p.peak/b:1;
+}
+function fetchedCS(d,hr){                 // hourly forecast curve, if we have today's
+  const f=S.p.fc;
+  if(!f||f.date!==iso(d)||!f.cs) return null;
+  const i=Math.max(0,Math.min(22,Math.floor(hr))), t=Math.min(1,hr-i);
+  const a=f.cs[i], b=f.cs[i+1];
+  if(a==null||b==null) return null;
+  return a+(b-a)*t;                        // linear between the hourly points
+}
+function uvAt(ms,cloud,blocked){
+  const d=new Date(ms), p=S.p;
+  const hr=d.getHours()+d.getMinutes()/60+d.getSeconds()/3600;
+  const e=elevation(d,hr,p.tz,p.lat,p.lon);
+  const fc=fetchedCS(d,hr);
+  const cs=fc!=null?fc:clearsky(e)*(S.s?S.s.cal:calib(d));
+  let T=CT[cloud]??1; if(blocked) T=Math.min(T,.45);
+  return {uvi:Math.max(0,cs*T),elev:e,cs:cs,T:T};
+}
+function geom(post,e){
+  if(e<=0) return 0;
+  const r=e*Math.PI/180, s=Math.max(Math.sin(r),.06), fd=.5;
+  if(post==="flat") return 1;
+  if(post==="reclined") return (1-fd)*.95/s+fd*.86;
+  return (1-fd)*(Math.cos(r)/s)+.5*fd;   // upright
+}
+
+/* ---- tank -------------------------------------------------------- */
+const dn=s=>{const[y,m,d]=s.split("-").map(Number);return Math.round(Date.UTC(y,m-1,d)/864e5);};
+const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);
+const today=()=>iso(new Date());
+function levelAt(day){let t=0;const n0=typeof day==="string"?dn(day):day;
+  for(const d of S.dep){const n=n0-dn(d.date); if(n>=0) t+=d.iu*Math.pow(.5,n/HALF);} return t;}
+function pace(days=30){const hi=dn(today()),lo=hi-days+1;let t=0;
+  for(const d of S.dep){const n=dn(d.date); if(n>=lo&&n<=hi) t+=d.iu;} return t/days;}
+function addDep(date,iu,src,lab){
+  S.dep.push({date:date,iu:Math.round(iu*10)/10,src:src,lab:lab||""});
+  S.dep.sort((a,b)=>a.date<b.date?-1:1); save(true);
+}
+
+/* ---- session ----------------------------------------------------- */
+function startSession(zones,posture,side,cloud){
+  const now=Date.now(), z={};
+  for(const k in ZONES) z[k]={dose:0,screen:false,bare:zones.includes(k)};
+  S.s={t0:now,last:now,posture:posture,side:side,cloud:cloud,blocked:false,
+       skin:S.p.skin,zones:z,cal:calib(new Date(now)),flipL:false,scrL:false,burnL:false,
+       tFront:0,tBack:0,log:[]};
+  logs("Session started");
+  save(true); wake();
+}
+function accrue(){
+  const s=S.s; if(!s||s.ended) return;
+  const now=Date.now(), STEP=6e4;   // integrate from timestamps, never a tick counter,
+  let t=s.last;                     // so backgrounding or locking the phone loses nothing
+  while(t<now){
+    const dt=Math.min(STEP,now-t), u=uvAt(t+dt/2,s.cloud,s.blocked);
+    const irr=u.uvi*geom(s.posture,u.elev)*0.025;
+    if(irr>0) for(const k in s.zones){
+      const z=s.zones[k];
+      if(ZONES[k].a===s.side&&z.bare&&!z.screen) z.dose+=irr*(dt/1000);
+    }
+    if(s.side==="front") s.tFront+=dt/1000; else s.tBack+=dt/1000;
+    t+=dt;
+  }
+  s.last=now; save();
+}
+function med(){return MED[S.s?S.s.skin:S.p.skin];}
+function vitD(){let t=0;const m=med();
+  for(const k in S.s.zones) t+=VMAX*ZONES[k].area*(1-Math.exp(-ALPHA*S.s.zones[k].dose/m));
+  return t;}
+function facing(){const s=S.s,o=[];
+  for(const k in s.zones) if(ZONES[k].a===s.side&&s.zones[k].bare&&!s.zones[k].screen) o.push(s.zones[k]);
+  return o;}
+function nBare(){let n=0;for(const k in S.s.zones) if(S.s.zones[k].bare) n++;return n;}
+function peakFrac(){const f=facing(),m=med();return f.length?Math.max(...f.map(z=>z.dose))/m:0;}
+function anyBurn(){const m=med();
+  for(const k in S.s.zones) if(S.s.zones[k].bare&&S.s.zones[k].dose/m>=BURN_AT) return true;
+  return false;}
+function sideFrac(side){const m=med();let x=0;
+  for(const k in S.s.zones) if(ZONES[k].a===side&&S.s.zones[k].bare) x=Math.max(x,S.s.zones[k].dose/m);
+  return x;}
+function toFlip(){ // minutes until the leading facing zone hits the flip threshold
+  const s=S.s,m=med(),f=facing(); if(!f.length) return null;
+  const u=uvAt(Date.now(),s.cloud,s.blocked), irr=u.uvi*geom(s.posture,u.elev)*0.025;
+  if(irr<=0) return null;
+  const left=(FLIP_AT*m)-Math.max(...f.map(z=>z.dose));
+  return left/irr/60;
+}
+function logs(m){const d=new Date();
+  S.s.log.push(String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")+" "+m);}
+function checkAlerts(){
+  const s=S.s,f=peakFrac();
+  if(anyBurn()&&!s.burnL){s.burnL=true;logs("1 MED passed");beep(4);}
+  else if(f>=SCREEN_AT&&!s.scrL){s.scrL=true;logs("sunscreen point");beep(3);}
+  else if(f>=FLIP_AT&&!s.flipL){s.flipL=true;logs("flip point");beep(2);}
+}
+
+/* ---- alert sound + wake lock ------------------------------------- */
+let AC=null,WL=null;
+function beep(n){
+  try{
+    AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+    if(AC.state==="suspended") AC.resume();
+    for(let i=0;i<n;i++){
+      const o=AC.createOscillator(),g=AC.createGain(),t=AC.currentTime+i*.26;
+      o.frequency.value=880; o.connect(g); g.connect(AC.destination);
+      g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(.35,t+.02);
+      g.gain.exponentialRampToValueAtTime(.001,t+.2); o.start(t); o.stop(t+.22);
+    }
+  }catch(e){}
+}
+async function wake(){try{if("wakeLock" in navigator) WL=await navigator.wakeLock.request("screen");}catch(e){}}
+function unwake(){try{WL&&WL.release();WL=null;}catch(e){}}
+
+/* ---- location + live forecast ------------------------------------ */
+function locate(){
+  return new Promise((ok,no)=>{
+    if(!navigator.geolocation) return no(new Error("no geolocation"));
+    navigator.geolocation.getCurrentPosition(
+      p=>{S.p.lat=+p.coords.latitude.toFixed(4); S.p.lon=+p.coords.longitude.toFixed(4);
+          S.p.tz=-new Date().getTimezoneOffset()/60; save(true); ok(S.p);},
+      e=>no(e), {enableHighAccuracy:false,timeout:12000,maximumAge:6e5});
+  });
+}
+async function getForecast(){
+  const p=S.p;
+  const u="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
+    +"&hourly=uv_index,uv_index_clear_sky,cloud_cover&forecast_days=1&timezone=auto";
+  const r=await fetch(u);
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  const j=await r.json(), hh=j.hourly;
+  S.p.fc={date:hh.time[0].slice(0,10), cs:hh.uv_index_clear_sky,
+          all:hh.uv_index, cc:hh.cloud_cover, got:Date.now()};
+  S.p.peak=0;                              // the real curve supersedes the calibration hack
+  save(true);
+  return S.p.fc;
+}
+function fcAge(){const f=S.p.fc; if(!f) return null;
+  if(f.date!==today()) return "stale";
+  const m=(Date.now()-f.got)/6e4;
+  return m<90?"fresh":"old";}
+function nowIdx(){const d=new Date();return d.getHours();}
+
+/* ---- helpers ----------------------------------------------------- */
+const $=(s,r)=>(r||document).querySelector(s);
+const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;};
+const cm=n=>n.toLocaleString("en-US",{maximumFractionDigits:0});
+const mmss=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(Math.floor(s%60)).padStart(2,"0");
+const esc=s=>String(s).replace(/[<>&"]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[c]));
+function uvcol(f){return f<.3?"var(--u1)":f<.5?"var(--u2)":f<.7?"var(--u3)":f<1?"var(--u4)":"var(--u5)";}
+let toastT;
+function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");
+  clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove("on"),2600);}
+
+/* ==================================================================
+   VIEWS
+   ================================================================== */
+let TAB="tank", TICK=null, draft={zones:Object.keys(ZONES),side:"front",cloud:"clear"};
+
+function go(t){TAB=t;render();}
+function render(){
+  clearInterval(TICK);TICK=null;
+  const v=$("#view");v.innerHTML="";
+  document.querySelectorAll("nav button").forEach(b=>
+    b.setAttribute("aria-current",b.dataset.t===TAB?"page":"false"));
+  ({tank:vTank,sun:vSun,add:vAdd,set:vSet}[TAB])(v);
+}
+
+/* ---- 1. tank ----------------------------------------------------- */
+function vTank(v){
+  const t=today(),L=levelAt(t),p=pace();
+  $("#ttl").textContent="The tank"; $("#hdr-r").textContent="";
+  $("#sub").textContent="15-day half-life · "+(TURN*100).toFixed(2)+"%/day turnover";
+  if(!S.dep.length){
+    v.appendChild(el("div","card empty",
+      "<div class='eyebrow'>Nothing logged</div><p>Log a sunbathing session or add a supplement "
+      +"and it starts filling here.</p>"));
+    const b=el("button","btn","Add a deposit"); b.onclick=()=>go("add"); v.lastChild.appendChild(b);
+    return;
+  }
+  const g=el("div","card flush");
+  g.innerHTML="<div class='grid'>"
+   +"<div><div class='k'>Level now</div><div class='v'>"+cm(L)+"<i>IU-eq</i></div></div>"
+   +"<div><div class='k'>To hold it</div><div class='v'>"+cm(L*TURN)+"<i>IU/day</i></div></div>"
+   +"<div><div class='k'>30-day pace</div><div class='v'>"+cm(p)+"<i>IU/day</i></div></div>"
+   +"<div><div class='k'>Settles at</div><div class='v'>"+cm(p*SS)+"</div></div></div>";
+  v.appendChild(g);
+
+  const c=el("div","card flush"); const cv=el("canvas"); c.appendChild(cv); v.appendChild(c);
+
+  const tb=el("div","card flush");
+  let rows="";
+  for(let i=0;i<S.dep.length;i++){
+    const d=S.dep[i],n=dn(t)-dn(d.date); if(n<0) continue;
+    const left=d.iu*Math.pow(.5,n/HALF), gone=1-left/d.iu;
+    const tg={sun:"sun",supplement:"sup",diet:"diet"}[d.src]||"diet";
+    const nm={sun:"Sun",supplement:"Supp",diet:"Diet"}[d.src]||d.src;
+    rows+="<tr><td><span class='d'>"+d.date.slice(5)+"</span><span class='tag "+tg+"'>"+nm+"</span>"
+      +(d.lab?"<span class='lab'>"+esc(d.lab)+"</span>":"")
+      +"</td><td class='n'>"+cm(d.iu)+"</td><td class='n'>"+cm(left)+"</td>"
+      +"<td class='n' style='color:var(--ink2)'>"+(gone*100).toFixed(0)+"%</td>"
+      +"<td style='padding-left:0'><button class='del' data-i='"+i+"' aria-label='Remove'>×</button></td></tr>";
+  }
+  tb.innerHTML="<table><thead><tr><th>Deposit</th><th>Made</th><th>Left</th><th>Gone</th><th></th></tr>"
+    +"</thead><tbody>"+rows+"</tbody><tfoot><tr><td>In the tank</td><td></td>"
+    +"<td class='n'>"+cm(L)+"</td><td colspan='2'></td></tr></tfoot></table>";
+  v.appendChild(tb);
+  tb.querySelectorAll(".del").forEach(b=>b.onclick=()=>{
+    if(confirm("Remove this deposit?")){S.dep.splice(+b.dataset.i,1);save(true);render();}});
+
+  const lo=S.p.base+L*NM_LO, hi=S.p.base+L*NM_HI;
+  v.appendChild(el("div","card","<div class='eyebrow'>What that's worth</div>"
+    +"<p class='hint' style='margin-top:9px'>From this ledger alone, serum 25(OH)D sits around "
+    +"<b>"+lo.toFixed(0)+"–"+hi.toFixed(0)+" nmol/L</b> ("+(lo/2.496).toFixed(1)+"–"
+    +(hi/2.496).toFixed(1)+" ng/mL)"+(S.p.base>0?" above your entered baseline.":
+    ", assuming a zero baseline — so read it as a floor, not a blood test.")
+    +" Holding a bigger tank costs more per day, because "+(TURN*100).toFixed(2)
+    +"% of whatever is in there leaves daily.</p>"));
+  requestAnimationFrame(()=>chart(cv));
+}
+
+function chart(cv){
+  const dpr=Math.min(devicePixelRatio||1,2.5);
+  const W=cv.clientWidth,H=190; cv.width=W*dpr; cv.height=H*dpr;
+  const x=cv.getContext("2d"); x.scale(dpr,dpr); x.clearRect(0,0,W,H);
+  const t0=Math.min(...S.dep.map(d=>dn(d.date))), tn=dn(today()), AHEAD=40, t1=tn+AHEAD;
+  const p=pace(), ml=34, mr=8, mt=12, mb=20;
+  const hist=[],proj=[],zero=[];
+  for(let t=t0;t<=tn;t++) hist.push([t,levelAt(t)]);
+  let a=levelAt(tn),b=a;
+  for(let t=tn;t<=t1;t++){ proj.push([t,a]); zero.push([t,b]); a=a*RET+p; b=b*RET; }
+  const ymax=Math.max(...hist.map(h=>h[1]),...proj.map(q=>q[1]))*1.14||1;
+  const X=t=>ml+(t-t0)/(t1-t0)*(W-ml-mr), Y=v=>H-mb-v/ymax*(H-mt-mb);
+  // y grid
+  x.font="500 9px ui-monospace,monospace"; x.textAlign="right"; x.textBaseline="middle";
+  const step=Math.pow(10,Math.floor(Math.log10(ymax)))* (ymax/Math.pow(10,Math.floor(Math.log10(ymax)))>5?2:1);
+  for(let v=0;v<=ymax;v+=step){
+    x.strokeStyle="#edeae1";x.lineWidth=1;x.beginPath();x.moveTo(ml,Y(v));x.lineTo(W-mr,Y(v));x.stroke();
+    x.fillStyle="#6b6558"; x.fillText(v>=1000?(v/1000)+"k":v,ml-6,Y(v));
+  }
+  // history: filled indigo
+  x.beginPath(); x.moveTo(X(hist[0][0]),Y(0));
+  hist.forEach(h=>x.lineTo(X(h[0]),Y(h[1]))); x.lineTo(X(tn),Y(0)); x.closePath();
+  x.fillStyle="rgba(43,58,103,.13)"; x.fill();
+  x.beginPath(); hist.forEach((h,i)=>i?x.lineTo(X(h[0]),Y(h[1])):x.moveTo(X(h[0]),Y(h[1])));
+  x.strokeStyle="#2b3a67"; x.lineWidth=2.2; x.lineJoin="round"; x.stroke();
+  // projections
+  x.setLineDash([5,4]); x.lineWidth=1.6;
+  x.beginPath(); proj.forEach((q,i)=>i?x.lineTo(X(q[0]),Y(q[1])):x.moveTo(X(q[0]),Y(q[1])));
+  x.strokeStyle="#2b3a67"; x.stroke();
+  x.setLineDash([2,3]);
+  x.beginPath(); zero.forEach((q,i)=>i?x.lineTo(X(q[0]),Y(q[1])):x.moveTo(X(q[0]),Y(q[1])));
+  x.strokeStyle="#c9243f"; x.stroke(); x.setLineDash([]);
+  // deposit markers
+  S.dep.forEach(d=>{const t=dn(d.date); if(t>tn) return;
+    x.beginPath(); x.arc(X(t),Y(levelAt(t)),3.6,0,7); 
+    x.fillStyle=d.src==="sun"?"#e2621b":d.src==="supplement"?"#2b3a67":"#2e8b3f";
+    x.fill(); x.strokeStyle="#fffefb"; x.lineWidth=1.6; x.stroke();});
+  // today rule + labels
+  x.strokeStyle="#14120e"; x.lineWidth=1; x.setLineDash([1,3]);
+  x.beginPath(); x.moveTo(X(tn),mt); x.lineTo(X(tn),H-mb); x.stroke(); x.setLineDash([]);
+  x.textAlign="left"; x.fillStyle="#6b6558"; x.font="500 9.5px system-ui";
+  x.fillText(S.dep[0].date.slice(5),ml,H-8);
+  x.textAlign="center"; x.fillStyle="#14120e"; x.fillText("today",X(tn),H-8);
+  x.textAlign="right"; x.fillStyle="#6b6558"; x.fillText("+"+AHEAD+"d",W-mr,H-8);
+  x.textAlign="left"; x.font="500 9px system-ui";
+  x.fillStyle="#2b3a67"; x.fillText("if the pace holds",X(tn)+6,Y(proj[proj.length-1][1])-6);
+  x.fillStyle="#c9243f"; x.fillText("if you stop",X(tn)+6,Y(zero[zero.length-1][1])+12);
+}
+
+/* ---- 2. session -------------------------------------------------- */
+function vSun(v){
+  if(S.s) return S.s.ended?vDone(v):vLive(v);
+  $("#ttl").textContent="New session"; $("#sub").textContent="Check what the sun can actually reach";
+  const now=uvAt(Date.now(),draft.cloud,false);
+  $("#hdr-r").textContent="UV "+now.uvi.toFixed(1);
+
+  const c1=el("div","card");
+  c1.innerHTML="<label class='f'><span>Cloud right now</span></label>";
+  const ch=el("div","chips");
+  CLOUD.forEach(([k,n])=>{const b=el("button",null,n);
+    b.setAttribute("aria-pressed",draft.cloud===k); b.onclick=()=>{draft.cloud=k;render();}; ch.appendChild(b);});
+  c1.querySelector("label").appendChild(ch);
+  const age=fcAge(), f=S.p.fc;
+  let src=age==="stale"||!f
+    ? "Modelled from the sun's angle. Tap Update below for today's real forecast."
+    : "From today's forecast for your spot"+(age==="old"?", fetched a while ago.":".");
+  c1.appendChild(el("p","hint","Clear-sky UV here is <b>"+now.cs.toFixed(1)
+    +"</b> with the sun at <b>"+now.elev.toFixed(0)+"°</b>. "+src
+    +" Scattered cloud costs little — about half of UV arrives as diffuse light off the whole sky."));
+  if(f&&age!=="stale"&&f.cc&&f.cc[nowIdx()]!=null)
+    c1.appendChild(el("p","hint","The forecast says <b>"+f.cc[nowIdx()]
+      +"% cloud</b> right now — but trust your eyes over a grid square."));
+  const fb=el("button","btn ghost sm",age==="stale"||!f?"Get today's UV and location":"Update UV and location");
+  fb.style.marginTop="12px";
+  fb.onclick=async()=>{
+    fb.disabled=true; fb.textContent="Checking…";
+    try{ await locate(); }catch(e){ toast("Couldn't get location — set it in Setup."); }
+    try{ await getForecast(); toast("Updated for "+S.p.lat+", "+S.p.lon+"."); }
+    catch(e){ toast("No connection — using the built-in model."); }
+    render();
+  };
+  c1.appendChild(fb);
+  v.appendChild(c1);
+
+  const c2=el("div","card");
+  c2.innerHTML="<label class='f'><span>Position</span><select id='post'>"
+    +["reclined","flat","upright"].map(p=>"<option value='"+p+"'"
+    +(S.p.posture===p?" selected":"")+">"+p[0].toUpperCase()+p.slice(1)+"</option>").join("")
+    +"</select></label><label class='f'><span>Side up first</span></label>";
+  const sd=el("div","chips");
+  [["front","Front"],["back","Back"]].forEach(([k,n])=>{const b=el("button",null,n);
+    b.setAttribute("aria-pressed",draft.side===k);
+    b.onclick=()=>{draft.side=k;render();}; sd.appendChild(b);});
+  c2.querySelectorAll("label")[1].appendChild(sd);
+  v.appendChild(c2);
+
+  const c3=el("div","card");
+  c3.innerHTML="<div class='eyebrow' style='margin-bottom:11px'>Bare skin</div>";
+  const zs=el("div","zsel");
+  for(const k in ZONES){const b=el("button",null,ZONES[k].n);
+    b.setAttribute("aria-pressed",draft.zones.includes(k));
+    b.onclick=()=>{const i=draft.zones.indexOf(k); i<0?draft.zones.push(k):draft.zones.splice(i,1);
+      b.setAttribute("aria-pressed",draft.zones.includes(k));};
+    zs.appendChild(b);}
+  c3.appendChild(zs); v.appendChild(c3);
+
+  const go1=el("button","btn","Start session");
+  go1.onclick=()=>{
+    if(!draft.zones.length) return toast("Pick at least one bare zone.");
+    S.p.posture=$("#post").value;
+    beep(1); startSession(draft.zones,S.p.posture,draft.side,draft.cloud); go("sun");
+  };
+  v.appendChild(go1);
+}
+
+function vLive(v){
+  const s=S.s; accrue(); checkAlerts();
+  $("#ttl").textContent=s.side==="front"?"Front up":"Back up";
+  $("#sub").textContent=s.posture+" · skin "+s.skin;
+  const u=uvAt(Date.now(),s.cloud,s.blocked);
+  $("#hdr-r").textContent="UV "+u.uvi.toFixed(1);
+
+  // banner
+  const f=peakFrac();
+  if(anyBurn()) v.appendChild(el("div","ban burn","<span class='g'>■</span><span>Past 1 MED — "
+    +"cover up now.<small>The leading zone has taken a full sunburn dose. More sun buys no vitamin D.</small></span>"));
+  else if(f>=SCREEN_AT) v.appendChild(el("div","ban scr","<span class='g'>▲</span><span>Sunscreen this side"
+    +"<small>Near the burn threshold. Synthesis has already saturated here.</small></span>"));
+  else if(f>=FLIP_AT) v.appendChild(el("div","ban flip","<span class='g'>↻</span><span>Turn over"
+    +"<small>This side has banked most of the vitamin D it's going to.</small></span>"));
+
+  // signature: countdown
+  const mins=toFlip(), cd=el("div","card");
+  const box=el("div","count"+(mins!==null&&mins<=2?" hot":""));
+  if(mins===null||mins<0){
+    const none=!facing().length;
+    box.innerHTML="<span class='big'>"+(f>=FLIP_AT?"NOW":"—")+"</span>"
+      +"<span class='cap'>"+(f>=FLIP_AT?"turn over":none?"nothing bare on this side":"sun is down")+"</span>"
+      +(none?"<span class='at'>Tap a zone below to uncover it</span>":"");
+  }else{
+    const at=new Date(Date.now()+mins*6e4);
+    box.innerHTML="<span class='big'>"+mmss(mins*60)+"</span><span class='cap'>until you turn over</span>"
+      +"<span class='at'>that's "+String(at.getHours()).padStart(2,"0")+":"
+      +String(at.getMinutes()).padStart(2,"0")+" — worth a phone timer too</span>";
+  }
+  cd.appendChild(box);
+  v.appendChild(cd);
+  const st=el("div","card flush");
+  const ff=sideFrac("front"), bf=sideFrac("back");
+  st.innerHTML="<div class='grid'>"
+   +"<div><div class='k'>Total in the sun</div><div class='v'>"+mmss((Date.now()-s.t0)/1000)+"</div></div>"
+   +"<div><div class='k'>Vitamin D</div><div class='v'>"+cm(vitD())+"<i>IU</i></div></div>"
+   +"<div class='sidec"+(s.side==="front"?" live":"")+"'><div class='k'>Front"
+     +(s.side==="front"?" · now":"")+"</div><div class='v'>"+mmss(s.tFront)
+     +"<i>"+(ff*100).toFixed(0)+"% MED</i></div></div>"
+   +"<div class='sidec"+(s.side==="back"?" live":"")+"'><div class='k'>Back"
+     +(s.side==="back"?" · now":"")+"</div><div class='v'>"+mmss(s.tBack)
+     +"<i>"+(bf*100).toFixed(0)+"% MED</i></div></div></div>";
+  v.appendChild(st);
+
+  // zone bars — tap any row to cover or uncover it
+  const zc=el("div","card"), m=med();
+  zc.appendChild(el("div","eyebrow","Tap a zone to cover or uncover it"));
+  const ks=Object.keys(ZONES).sort((a,b)=>
+    (s.zones[b].bare-s.zones[a].bare)||(s.zones[b].dose-s.zones[a].dose));
+  ks.forEach(k=>{
+    const z=s.zones[k], fr=z.dose/m, up=ZONES[k].a===s.side&&z.bare&&!z.screen;
+    const d=el("button","z zbtn"+(up?"":" off")+(z.bare?"":" cov"));
+    d.setAttribute("aria-pressed",z.bare);
+    d.innerHTML="<div class='zl'><b>"+ZONES[k].n
+      +(!z.bare?"<span class='cvd'>Covered</span>":z.screen?"<span class='cvd'>Screened</span>":"")
+      +(up?"<span class='now'>Sun</span>":"")+"</b><span class='r'>"+(fr*100).toFixed(0)+"% MED</span></div>"
+      +"<div class='track'><i style='width:"+Math.min(100,fr*100).toFixed(1)+"%;background:"
+      +(!z.bare||z.screen?"#b8b2a4":uvcol(fr))+"'></i></div>";
+    d.onclick=()=>{accrue();z.bare=!z.bare;
+      if(z.bare){z.screen=false;s.flipL=false;s.scrL=false;}
+      save(true);render();};
+    zc.appendChild(d);
+  });
+  v.appendChild(zc);
+
+  // controls
+  const r1=el("div","row");
+  const fb=el("button","btn","↻ I turned over");
+  fb.onclick=()=>{accrue();s.side=s.side==="front"?"back":"front";s.flipL=false;s.scrL=false;
+    logs("turned "+s.side+" up");save(true);render();};
+  r1.appendChild(fb); v.appendChild(r1);
+  const r2=el("div","row");
+  const sb=el("button","btn warn sm","Sunscreen on");
+  sb.onclick=()=>{accrue();let n=0;
+    for(const k in s.zones) if(ZONES[k].a===s.side&&s.zones[k].bare&&!s.zones[k].screen){s.zones[k].screen=true;n++;}
+    s.scrL=false;logs("sunscreen on "+n+" zone(s)");save(true);render();toast(n+" zone(s) screened.");};
+  const eb=el("button","btn stop sm","End session");
+  eb.onclick=()=>endSession();
+  r2.appendChild(sb); r2.appendChild(eb); v.appendChild(r2);
+
+  const cc=el("div","card");
+  cc.innerHTML="<label class='f' style='margin:0'><span>Cloud changed?</span></label>";
+  const ch=el("div","chips");
+  CLOUD.forEach(([k,n])=>{const b=el("button",null,n);b.setAttribute("aria-pressed",s.cloud===k);
+    b.onclick=()=>{accrue();s.cloud=k;logs("cloud "+n);save(true);render();};ch.appendChild(b);});
+  const bb=el("button",null,"Sun behind cloud");
+  bb.setAttribute("aria-pressed",s.blocked);
+  bb.onclick=()=>{accrue();s.blocked=!s.blocked;save(true);render();};
+  ch.appendChild(bb);
+  cc.querySelector("label").appendChild(ch);
+  v.appendChild(cc);
+
+  if(!TICK) TICK=setInterval(()=>{if(TAB==="sun"&&S.s) render();},1000);
+}
+
+function endSession(){
+  accrue(); S.s.ended=true; S.s.iu=Math.round(vitD());
+  unwake(); save(true); render();
+}
+function vDone(v){
+  const s=S.s, iu=s.iu;
+  $("#ttl").textContent="Session done"; $("#sub").textContent=mmss((s.last-s.t0)/1000)+" in the sun";
+  $("#hdr-r").textContent="";
+  const c=el("div","card");
+  c.innerHTML="<div class='eyebrow'>Made</div>"
+   +"<div class='count'><span class='big' style='font-size:60px'>"+cm(iu)+"</span>"
+   +"<span class='cap'>IU · "+(iu/600).toFixed(1)+"× the 600 IU daily reference</span></div>";
+  v.appendChild(c);
+  const f=el("div","card");
+  f.innerHTML="<label class='f'><span>Log this much</span>"
+    +"<input class='num' id='liu' type='number' inputmode='numeric' value='"+iu+"'></label>"
+    +"<label class='f' style='margin:0'><span>Note</span><input id='llab' value='"
+    +esc(s.posture+", "+Object.keys(s.zones).length+" zones")+"'></label>";
+  v.appendChild(f);
+  const b1=el("button","btn","Log to tank");
+  b1.onclick=()=>{addDep(today(),+$("#liu").value||0,"sun",$("#llab").value);
+    S.s=null;save(true);toast("Logged. Tank now "+cm(levelAt(today()))+" IU-eq.");go("tank");};
+  const b2=el("button","btn ghost","Discard");
+  b2.style.marginTop="9px";
+  b2.onclick=()=>{if(confirm("Discard this session?")){S.s=null;save(true);go("sun");}};
+  v.appendChild(b1); v.appendChild(b2);
+}
+
+/* ---- 3. add ------------------------------------------------------ */
+function vAdd(v){
+  $("#ttl").textContent="Add a deposit"; $("#hdr-r").textContent="";
+  $("#sub").textContent="Supplements and food decay exactly like sun";
+  const c=el("div","card");
+  c.innerHTML="<label class='f'><span>Date</span><input class='num' id='adate' type='date' value='"+today()+"'></label>"
+   +"<div class='row'><label class='f'><span>IU</span>"
+   +"<input class='num' id='aiu' type='number' inputmode='numeric' value='2000'></label>"
+   +"<label class='f'><span>Kind</span><select id='asrc'>"
+   +"<option value='supplement'>Supplement</option><option value='diet'>Food or drink</option>"
+   +"<option value='sun'>Sun (manual)</option></select></label></div>"
+   +"<label class='f' style='margin:0'><span>Note</span><input id='alab' placeholder='D3 softgel'></label>";
+  v.appendChild(c);
+  const b=el("button","btn","Add to tank");
+  b.onclick=()=>{const iu=+$("#aiu").value;
+    if(!(iu>0)) return toast("Enter an amount above zero.");
+    addDep($("#adate").value,iu,$("#asrc").value,$("#alab").value);
+    toast("Added. Tank now "+cm(levelAt(today()))+" IU-eq."); go("tank");};
+  v.appendChild(b);
+
+  const q=el("div","card"); q.style.marginTop="14px";
+  q.innerHTML="<div class='eyebrow' style='margin-bottom:11px'>One tap, dated today</div>";
+  const ch=el("div","chips");
+  [[400,"supplement","D3 400 IU"],[1000,"supplement","D3 1,000 IU"],[2000,"supplement","D3 2,000 IU"],
+   [5000,"supplement","D3 5,000 IU"],[50000,"supplement","D3 50,000 IU"],
+   [300,"diet","Vitamin Well Defence"]].forEach(([iu,src,lab])=>{
+    const b=el("button",null,lab);
+    b.onclick=()=>{addDep(today(),iu,src,lab);toast(lab+" added.");go("tank");};
+    ch.appendChild(b);});
+  q.appendChild(ch); v.appendChild(q);
+}
+
+/* ---- 4. setup ---------------------------------------------------- */
+function vSet(v){
+  $("#ttl").textContent="Setup"; $("#sub").textContent="Stored on this phone only"; $("#hdr-r").textContent="";
+  const p=S.p, c=el("div","card");
+  c.innerHTML="<div class='row'><label class='f'><span>Skin type</span><select id='sk'>"
+   +Object.keys(MED).map(k=>"<option"+(p.skin===k?" selected":"")+">"+k+"</option>").join("")
+   +"</select></label><label class='f'><span>MED</span><input class='num' value='"+MED[p.skin]
+   +" J/m²' disabled></label></div>"
+   +"<div class='row'><label class='f'><span>Latitude</span><input class='num' id='la' type='number' step='0.001' value='"+p.lat+"'></label>"
+   +"<label class='f'><span>Longitude</span><input class='num' id='lo' type='number' step='0.001' value='"+p.lon+"'></label></div>"
+   +"<div class='row'><label class='f'><span>UTC offset</span><input class='num' id='tz' type='number' step='1' value='"+p.tz+"'></label>"
+   +"<label class='f'><span>Peak UVI today</span><input class='num' id='pk' type='number' step='0.1' value='"+p.peak+"'></label></div>"
+   +"<label class='f' style='margin:0'><span>Blood 25(OH)D, nmol/L (optional)</span>"
+   +"<input class='num' id='bs' type='number' step='1' value='"+p.base+"'></label>"
+   +"<p class='hint'>Leave peak UVI at <b>0</b> unless you're offline and want to hand-tune the "
+   +"model to a forecast peak. A fetched forecast overrides it anyway.</p>";
+  v.appendChild(c);
+  const lb=el("button","btn ghost sm","Use my location");
+  lb.style.marginBottom="9px";
+  lb.onclick=async()=>{lb.disabled=true;lb.textContent="Locating…";
+    try{await locate();toast("Location set.");}catch(e){toast("Location denied or unavailable.");}
+    render();};
+  v.appendChild(lb);
+  const age=fcAge(), fx=S.p.fc;
+  const uv=el("div","card");
+  uv.innerHTML="<div class='eyebrow'>UV data</div><p class='hint'>"
+   +(!fx||age==="stale"
+     ? "Right now UV is <b>modelled</b> from the sun's angle for your coordinates — good, "
+       +"but it can't know today's ozone or haze."
+     : "Using the <b>real hourly forecast</b> for "+fx.date+", peak clear-sky UV <b>"
+       +Math.max(...fx.cs.filter(x=>x!=null)).toFixed(1)+"</b>.")
+   +" Fetching pulls from Open-Meteo (free, no account) and sends only your coordinates. "
+   +"Everything works offline without it.</p>";
+  const ub=el("button","btn ghost sm","Fetch today's UV forecast");
+  ub.style.marginTop="12px";
+  ub.onclick=async()=>{ub.disabled=true;ub.textContent="Fetching…";
+    try{await getForecast();toast("Got today's UV curve.");}
+    catch(e){toast("Couldn't reach the forecast — the model still works.");}
+    render();};
+  uv.appendChild(ub); v.appendChild(uv);
+  $("#sk").onchange=()=>{S.p.skin=$("#sk").value;save(true);render();};
+  const sv=el("button","btn","Save");
+  sv.onclick=()=>{p.skin=$("#sk").value;p.lat=+$("#la").value;p.lon=+$("#lo").value;
+    p.tz=+$("#tz").value;p.peak=+$("#pk").value;p.base=+$("#bs").value;save(true);
+    toast("Saved.");render();};
+  v.appendChild(sv);
+
+  const bk=el("div","card"); bk.style.marginTop="18px";
+  bk.innerHTML="<div class='eyebrow'>Backup</div><p class='hint'>Your "+S.dep.length
+   +" deposits live in this phone's storage and go nowhere else. Wipe the phone and they're gone, "
+   +"so save a copy now and then.</p>";
+  const b1=el("button","btn ghost sm","Save a backup file");
+  b1.style.marginTop="12px";
+  b1.onclick=()=>{
+    const blob=new Blob([JSON.stringify(S,null,1)],{type:"application/json"});
+    const a=el("a"); a.href=URL.createObjectURL(blob);
+    a.download="sunwatch-"+today()+".json"; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  };
+  const b2=el("button","btn ghost sm","Copy backup text");
+  b2.style.marginTop="9px";
+  b2.onclick=async()=>{try{await navigator.clipboard.writeText(JSON.stringify(S));
+    toast("Copied. Paste it somewhere safe.");}catch(e){toast("Couldn't copy — use the file instead.");}};
+  const ta=el("textarea"); ta.rows=3; ta.placeholder="Paste a backup here to restore";
+  ta.style.marginTop="12px";
+  const b3=el("button","btn ghost sm","Restore from pasted text");
+  b3.style.marginTop="9px";
+  b3.onclick=()=>{
+    try{const r=JSON.parse(ta.value); if(!r.p||!Array.isArray(r.dep)) throw 0;
+      if(!confirm("Replace everything on this phone with the pasted backup?")) return;
+      S=r; save(true); toast("Restored."); go("tank");}
+    catch(e){toast("That isn't a SunWatch backup.");}
+  };
+  bk.appendChild(b1); bk.appendChild(b2); bk.appendChild(ta); bk.appendChild(b3);
+  v.appendChild(bk);
+
+  v.appendChild(el("div","card","<div class='eyebrow'>How it works</div><p class='hint'>"
+   +"Dose builds from timestamps, not a running clock, so locking the phone mid-session costs you nothing. "
+   +"UV comes from a clear-sky model driven by the sun's angle, scaled by the cloud you pick. "
+   +"Vitamin D saturates per zone — <b>Vmax × area × (1 − e<sup>−α·dose/MED</sup>)</b> — "
+   +"and every deposit in the tank decays with a 15-day half-life.</p>"));
+}
+
+/* ---- boot -------------------------------------------------------- */
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>go(b.dataset.t));
+document.addEventListener("visibilitychange",()=>{
+  if(!document.hidden){ if(S.s){accrue();wake();} if(TAB==="tank"||TAB==="sun") render(); }
+  else save(true);
+});
+window.addEventListener("pagehide",()=>save(true));
+window.addEventListener("resize",()=>{if(TAB==="tank") render();});
+if(S.s) TAB="sun";
+render();
+</script>
+</body>
+</html>
