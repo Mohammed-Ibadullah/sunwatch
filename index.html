@@ -8,6 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="SunWatch">
 <meta name="theme-color" content="#f7f5f0">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="manifest" href="manifest.json">
 <title>SunWatch</title>
 <style>
 /* ---- tokens -------------------------------------------------------
@@ -41,7 +44,7 @@ header{position:sticky;top:0;z-index:20;background:var(--paper);
 header .sub{font:400 12px/1 system-ui;color:var(--ink2)}
 main{padding:var(--pad) var(--pad) 26px;max-width:520px;margin:0 auto}
 nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;
-  grid-template-columns:repeat(4,1fr);background:var(--card);
+  grid-template-columns:repeat(5,1fr);background:var(--card);
   border-top:1px solid var(--rule);padding-bottom:env(safe-area-inset-bottom)}
 nav button{appearance:none;border:0;background:none;padding:9px 0 8px;
   font:600 10.5px/1.5 system-ui;letter-spacing:.06em;text-transform:uppercase;
@@ -162,6 +165,21 @@ td .lab{display:block;font-size:12px;color:var(--ink2);margin-top:2px}
 tfoot td{border-top:1.5px solid var(--ink);border-bottom:0;font-weight:600;padding-top:13px}
 canvas{display:block;width:100%;height:190px}
 .del{appearance:none;background:none;border:0;color:var(--ink2);font-size:17px;padding:4px 0 4px 10px}
+.daysel{display:flex;gap:7px;overflow-x:auto;padding:0 0 12px;-webkit-overflow-scrolling:touch}
+.daysel button{flex:none;appearance:none;background:var(--card);border:1px solid var(--rule);
+  border-radius:11px;padding:9px 11px;text-align:center;color:var(--ink);min-width:64px}
+.daysel button[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.daysel .dw{display:block;font:600 10px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;opacity:.7}
+.daysel .dv{display:block;font:600 16px/1.3 ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.daysel .du{display:block;font:400 9.5px/1 system-ui;opacity:.7}
+.key{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink2);padding:10px 14px 14px}
+.key span{display:flex;align-items:center;gap:5px}
+.key i{width:14px;height:3px;border-radius:2px;display:block}
+.note{background:var(--store-l);border:1px solid #c9d1e6;color:#22315c;border-radius:12px;
+  padding:13px 15px;font-size:13.5px;line-height:1.5;margin-bottom:14px}
+.note b{font-weight:600}
+tr.best td{background:#fdf7ee}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px}
 .empty{text-align:center;padding:34px 16px}
 .empty p{color:var(--ink2);font-size:14px;margin:8px 0 18px}
 .toast{position:fixed;left:50%;bottom:calc(76px + env(safe-area-inset-bottom));
@@ -178,6 +196,7 @@ canvas{display:block;width:100%;height:190px}
 <main id="view"></main>
 <nav>
   <button data-t="tank"><span class="g">▲</span>Tank</button>
+  <button data-t="fc"><span class="g">◷</span>Outlook</button>
   <button data-t="sun"><span class="g">☀</span>Session</button>
   <button data-t="add"><span class="g">＋</span>Add</button>
   <button data-t="set"><span class="g">≡</span>Setup</button>
@@ -198,15 +217,38 @@ const VMAX=18000, ALPHA=1.5;
 const MED={I:200,II:250,III:350,IV:450,V:600,VI:1000};
 const NM_LO=0.00045, NM_HI=0.0011;
 const FLIP_AT=0.5, SCREEN_AT=0.7, BURN_AT=1.0;
+/* Regional shares of total body surface, from the Lund-Browder / rule-of-nines
+   adult scheme, split front and back. Head+neck 9 (4.5 each face), trunk 36
+   (18 each face), each arm 9 (4.5 each face), each leg 18 (thigh 9, lower 9,
+   halved front/back). Both arms and both legs are counted together here, which
+   is why these are roughly double the old per-limb figures. Sums to 0.945;
+   the remainder is soles, palms and perineum, which never see the sun.        */
 const ZONES={
-  face:{a:"front",area:.045,n:"Face"},        chest:{a:"front",area:.18,n:"Torso front"},
-  farms:{a:"front",area:.045,n:"Arms front"}, fthigh:{a:"front",area:.05,n:"Thighs front"},
-  fshin:{a:"front",area:.045,n:"Shins"},      back:{a:"back",area:.18,n:"Back"},
-  barms:{a:"back",area:.045,n:"Arms back"},   bthigh:{a:"back",area:.05,n:"Thighs back"},
-  bcalf:{a:"back",area:.045,n:"Calves"}
+  face:{a:"front",area:.045,n:"Face and neck"}, chest:{a:"front",area:.18,n:"Torso front"},
+  farms:{a:"front",area:.09,n:"Arms front"},    fthigh:{a:"front",area:.09,n:"Thighs front"},
+  fshin:{a:"front",area:.09,n:"Shins"},         back:{a:"back",area:.18,n:"Back"},
+  barms:{a:"back",area:.09,n:"Arms back"},      bthigh:{a:"back",area:.09,n:"Thighs back"},
+  bcalf:{a:"back",area:.09,n:"Calves"}
 };
-const CLOUD=[["clear","Clear",1.00],["few","1–2/8",0.95],["scat","3–4/8",0.85],
-             ["brok","5–7/8",0.62],["over","Overcast",0.35],["dark","Dark / rain",0.18]];
+/* What clothing hides. A t-shirt takes the trunk, a long-sleeved shirt takes
+   the arms with it, trousers take everything below the waist. Short shorts
+   leave the legs bare but still cover the top of the thigh, so that zone
+   keeps a reduced area rather than disappearing.                           */
+const TOPS={none:{n:"Nothing on top",hide:[]},
+            tshirt:{n:"T-shirt",hide:["chest","back"]},
+            shirt:{n:"Long-sleeved shirt",hide:["chest","back","farms","barms"]}};
+const BOTS={shorts:{n:"Shorts",hide:[],trim:{fthigh:.8,bthigh:.8}},
+            pants:{n:"Long trousers",hide:["fthigh","bthigh","fshin","bcalf"],trim:{}}};
+const hidden=(top,bot)=>TOPS[top].hide.concat(BOTS[bot].hide);
+const zoneArea=(k,bot)=>ZONES[k].area*((BOTS[bot]&&BOTS[bot].trim[k])||1);
+
+/* Du Bois. VMAX is a whole-body figure at a 1.8 m2 reference body, so
+   synthesis scales with your actual square metres of lit skin.  */
+const BSA_REF=1.8;
+const bsa=(h,w)=>0.007184*Math.pow(h,0.725)*Math.pow(w,0.425);
+const bodyScale=()=>bsa(S.p.h||180,S.p.w||75)/BSA_REF;
+const CLOUD=[["clear","Clear sky",1.00],["few","Mostly sunny",0.95],["scat","Patchy cloud",0.85],
+             ["brok","Mostly cloudy",0.62],["over","Overcast",0.35],["dark","Dark or raining",0.18]];
 const CT=Object.fromEntries(CLOUD.map(c=>[c[0],c[2]]));
 const SEED=[["2026-06-18",9900,"sun","beach, full body"],["2026-07-14",4350,"sun","lake, reclined"],
             ["2026-07-21",3150,"sun","Damhussøen"],["2026-07-29",4063,"sun","session"],
@@ -217,7 +259,7 @@ const KEY="sunwatch.v1";
 let S=load();
 function load(){
   try{const r=JSON.parse(localStorage.getItem(KEY)); if(r&&r.p) return r;}catch(e){}
-  return {p:{skin:"IV",lat:55.686,lon:12.481,tz:2,peak:0,base:0,posture:"reclined"},
+  return {p:{skin:"IV",lat:55.686,lon:12.481,tz:2,peak:0,base:0,posture:"reclined",h:180,w:75},
           dep:SEED.map(d=>({date:d[0],iu:d[1],src:d[2],lab:d[3]})), s:null};
 }
 let saveT=0;
@@ -285,17 +327,19 @@ function addDep(date,iu,src,lab){
 }
 
 /* ---- session ----------------------------------------------------- */
-function startSession(zones,posture,side,cloud){
+function startSession(zones,posture,side,cloud,bot){
   const now=Date.now(), z={};
-  for(const k in ZONES) z[k]={dose:0,screen:false,bare:zones.includes(k)};
+  for(const k in ZONES) z[k]={dose:0,screen:false,bare:zones.includes(k),
+                              area:zoneArea(k,bot||"shorts")};
   S.s={t0:now,last:now,posture:posture,side:side,cloud:cloud,blocked:false,
        skin:S.p.skin,zones:z,cal:calib(new Date(now)),flipL:false,scrL:false,burnL:false,
-       tFront:0,tBack:0,log:[]};
+       tFront:0,tBack:0,paused:false,log:[]};
   logs("Session started");
   save(true); wake();
 }
 function accrue(){
   const s=S.s; if(!s||s.ended) return;
+  if(s.paused){ s.last=Date.now(); return; }   // clock keeps moving, nothing accrues
   const now=Date.now(), STEP=6e4;   // integrate from timestamps, never a tick counter,
   let t=s.last;                     // so backgrounding or locking the phone loses nothing
   while(t<now){
@@ -311,8 +355,10 @@ function accrue(){
   s.last=now; save();
 }
 function med(){return MED[S.s?S.s.skin:S.p.skin];}
-function vitD(){let t=0;const m=med();
-  for(const k in S.s.zones) t+=VMAX*ZONES[k].area*(1-Math.exp(-ALPHA*S.s.zones[k].dose/m));
+function vitD(){let t=0;const m=med(),sc=bodyScale();
+  for(const k in S.s.zones){const z=S.s.zones[k];
+    if(!z.bare) continue;
+    t+=VMAX*sc*(z.area!=null?z.area:ZONES[k].area)*(1-Math.exp(-ALPHA*z.dose/m));}
   return t;}
 function facing(){const s=S.s,o=[];
   for(const k in s.zones) if(ZONES[k].a===s.side&&s.zones[k].bare&&!s.zones[k].screen) o.push(s.zones[k]);
@@ -401,7 +447,7 @@ function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("on");
 /* ==================================================================
    VIEWS
    ================================================================== */
-let TAB="tank", TICK=null, draft={zones:Object.keys(ZONES),side:"front",cloud:"clear"};
+let TAB="tank", TICK=null, draft={zones:Object.keys(ZONES),side:"front",cloud:"clear",top:"none",bot:"shorts"};
 
 function go(t){TAB=t;render();}
 function render(){
@@ -409,7 +455,7 @@ function render(){
   const v=$("#view");v.innerHTML="";
   document.querySelectorAll("nav button").forEach(b=>
     b.setAttribute("aria-current",b.dataset.t===TAB?"page":"false"));
-  ({tank:vTank,sun:vSun,add:vAdd,set:vSet}[TAB])(v);
+  ({tank:vTank,sun:vSun,fc:vFc,add:vAdd,set:vSet}[TAB])(v);
 }
 
 /* ---- 1. tank ----------------------------------------------------- */
@@ -561,29 +607,54 @@ function vSun(v){
   c2.querySelectorAll("label")[1].appendChild(sd);
   v.appendChild(c2);
 
+  const c25=el("div","card");
+  c25.innerHTML="<div class='row' style='margin:0'>"
+   +"<label class='f' style='margin:0'><span>On top</span><select id='top'>"
+   +Object.keys(TOPS).map(k=>"<option value='"+k+"'"+(draft.top===k?" selected":"")+">"
+     +TOPS[k].n+"</option>").join("")+"</select></label>"
+   +"<label class='f' style='margin:0'><span>On the bottom</span><select id='bot'>"
+   +Object.keys(BOTS).map(k=>"<option value='"+k+"'"+(draft.bot===k?" selected":"")+">"
+     +BOTS[k].n+"</option>").join("")+"</select></label></div>";
+  v.appendChild(c25);
+  const dress=()=>{
+    const oldHide=hidden(draft.top,draft.bot);
+    draft.top=$("#top").value; draft.bot=$("#bot").value;
+    const now=hidden(draft.top,draft.bot);
+    draft.zones=draft.zones.filter(k=>!now.includes(k));          // cover what's covered
+    for(const k of oldHide) if(!now.includes(k)&&!draft.zones.includes(k)) draft.zones.push(k);
+    render();                                                      // uncover what you took off
+  };
+  $("#top").onchange=dress; $("#bot").onchange=dress;
+
   const c3=el("div","card");
   c3.innerHTML="<div class='eyebrow' style='margin-bottom:11px'>Bare skin</div>";
-  const zs=el("div","zsel");
-  for(const k in ZONES){const b=el("button",null,ZONES[k].n);
+  const zs=el("div","zsel"), hid=hidden(draft.top,draft.bot);
+  for(const k in ZONES){
+    const cov=hid.includes(k);
+    const b=el("button",null,ZONES[k].n+(cov?" <span style='opacity:.6'>· covered</span>":""));
     b.setAttribute("aria-pressed",draft.zones.includes(k));
+    if(cov) b.style.opacity=".5";
     b.onclick=()=>{const i=draft.zones.indexOf(k); i<0?draft.zones.push(k):draft.zones.splice(i,1);
-      b.setAttribute("aria-pressed",draft.zones.includes(k));};
+      b.setAttribute("aria-pressed",draft.zones.includes(k)); b.style.opacity="1";};
     zs.appendChild(b);}
-  c3.appendChild(zs); v.appendChild(c3);
+  c3.appendChild(zs);
+  if(draft.bot==="shorts") c3.appendChild(el("p","hint",
+    "Shorts keep the thighs in play at <b>80%</b> of their area — the top of the thigh stays covered."));
+  v.appendChild(c3);
 
   const go1=el("button","btn","Start session");
   go1.onclick=()=>{
     if(!draft.zones.length) return toast("Pick at least one bare zone.");
     S.p.posture=$("#post").value;
-    beep(1); startSession(draft.zones,S.p.posture,draft.side,draft.cloud); go("sun");
+    beep(1); startSession(draft.zones,S.p.posture,draft.side,draft.cloud,draft.bot); go("sun");
   };
   v.appendChild(go1);
 }
 
 function vLive(v){
   const s=S.s; accrue(); checkAlerts();
-  $("#ttl").textContent=s.side==="front"?"Front up":"Back up";
-  $("#sub").textContent=s.posture+" · skin "+s.skin;
+  $("#ttl").textContent=s.paused?"Paused":(s.side==="front"?"Front up":"Back up");
+  $("#sub").textContent=s.posture+" · skin "+s.skin+(s.paused?" · nothing accruing":"");
   const u=uvAt(Date.now(),s.cloud,s.blocked);
   $("#hdr-r").textContent="UV "+u.uvi.toFixed(1);
 
@@ -597,9 +668,12 @@ function vLive(v){
     +"<small>This side has banked most of the vitamin D it's going to.</small></span>"));
 
   // signature: countdown
-  const mins=toFlip(), cd=el("div","card");
+  const mins=s.paused?null:toFlip(), cd=el("div","card");
   const box=el("div","count"+(mins!==null&&mins<=2?" hot":""));
-  if(mins===null||mins<0){
+  if(s.paused){
+    box.innerHTML="<span class='big'>❚❚</span><span class='cap'>paused</span>"
+      +"<span class='at'>Dose and timers are frozen. Resume when you're back in the sun.</span>";
+  }else if(mins===null||mins<0){
     const none=!facing().length;
     box.innerHTML="<span class='big'>"+(f>=FLIP_AT?"NOW":"—")+"</span>"
       +"<span class='cap'>"+(f>=FLIP_AT?"turn over":none?"nothing bare on this side":"sun is down")+"</span>"
@@ -615,7 +689,7 @@ function vLive(v){
   const st=el("div","card flush");
   const ff=sideFrac("front"), bf=sideFrac("back");
   st.innerHTML="<div class='grid'>"
-   +"<div><div class='k'>Total in the sun</div><div class='v'>"+mmss((Date.now()-s.t0)/1000)+"</div></div>"
+   +"<div><div class='k'>Total in the sun</div><div class='v'>"+mmss(s.tFront+s.tBack)+"</div></div>"
    +"<div><div class='k'>Vitamin D</div><div class='v'>"+cm(vitD())+"<i>IU</i></div></div>"
    +"<div class='sidec"+(s.side==="front"?" live":"")+"'><div class='k'>Front"
      +(s.side==="front"?" · now":"")+"</div><div class='v'>"+mmss(s.tFront)
@@ -653,13 +727,16 @@ function vLive(v){
     logs("turned "+s.side+" up");save(true);render();};
   r1.appendChild(fb); v.appendChild(r1);
   const r2=el("div","row");
+  const pb=el("button","btn ghost sm",s.paused?"▶ Resume":"❚❚ Pause");
+  pb.onclick=()=>{accrue();s.paused=!s.paused;s.last=Date.now();
+    logs(s.paused?"paused":"resumed");save(true);render();};
   const sb=el("button","btn warn sm","Sunscreen on");
   sb.onclick=()=>{accrue();let n=0;
     for(const k in s.zones) if(ZONES[k].a===s.side&&s.zones[k].bare&&!s.zones[k].screen){s.zones[k].screen=true;n++;}
     s.scrL=false;logs("sunscreen on "+n+" zone(s)");save(true);render();toast(n+" zone(s) screened.");};
   const eb=el("button","btn stop sm","End session");
   eb.onclick=()=>endSession();
-  r2.appendChild(sb); r2.appendChild(eb); v.appendChild(r2);
+  r2.appendChild(pb); r2.appendChild(sb); r2.appendChild(eb); v.appendChild(r2);
 
   const cc=el("div","card");
   cc.innerHTML="<label class='f' style='margin:0'><span>Cloud changed?</span></label>";
@@ -682,7 +759,7 @@ function endSession(){
 }
 function vDone(v){
   const s=S.s, iu=s.iu;
-  $("#ttl").textContent="Session done"; $("#sub").textContent=mmss((s.last-s.t0)/1000)+" in the sun";
+  $("#ttl").textContent="Session done"; $("#sub").textContent=mmss(s.tFront+s.tBack)+" in the sun";
   $("#hdr-r").textContent="";
   const c=el("div","card");
   c.innerHTML="<div class='eyebrow'>Made</div>"
@@ -702,6 +779,236 @@ function vDone(v){
   b2.style.marginTop="9px";
   b2.onclick=()=>{if(confirm("Discard this session?")){S.s=null;save(true);go("sun");}};
   v.appendChild(b1); v.appendChild(b2);
+}
+
+/* ==================================================================
+   OUTLOOK — when to go over the next few days.
+   Uses the forecast's all-sky UV, which already has the predicted cloud
+   baked in, plus the clear-sky curve so you can see what a cloudy day is
+   costing you.
+   ================================================================== */
+
+/* Vitamin D needs UVB, and a low sun means a long slant path through ozone,
+   which strips UVB out while the UVA that reddens skin keeps coming. Below
+   about 20 deg there is effectively no synthesis. This is why evening sun is
+   a bad trade: same burn, far less vitamin D.                              */
+function uvbGate(e){ return e<=20?0:e>=30?1:(e-20)/10; }
+
+function fcUV(day,hr,which){
+  const a=day[which], i=Math.floor(hr);
+  if(i<0||i>22) return 0;
+  const lo=a[i], hi=a[i+1];
+  if(lo==null) return 0;
+  if(hi==null) return Math.max(0,lo);
+  return Math.max(0,lo+(hi-lo)*(hr-i));
+}
+function fcNoon(day){
+  const d=new Date(day.date+"T12:00:00"); let b=-90;
+  for(let m=0;m<1440;m+=6){const e=elevation(d,m/60,day.tz,S.p.lat,S.p.lon); if(e>b) b=e;}
+  return b;
+}
+/* One simulated session: front up to half a burn dose, flip, same again. */
+function fcSim(day,start,which,zones){
+  const m=med(), lim=FLIP_AT*m, sc=bodyScale(), dt=1/60, dObj=new Date(day.date+"T12:00:00");
+  let t=start, side="front", dF=0, dB=0, sF=0, sB=0;
+  while(t<22.5){
+    const e=elevation(dObj,t,day.tz,S.p.lat,S.p.lon);
+    const irr=fcUV(day,t,which)*geom(S.p.posture,e)*0.025;
+    if(irr<=0){ if(t>start+0.05) break; t+=dt; continue; }
+    const j=irr*dt*3600, g=uvbGate(e);
+    if(side==="front"){dF+=j;sF+=j*g;} else {dB+=j;sB+=j*g;}
+    t+=dt;
+    if(side==="front"&&dF>=lim) side="back";
+    else if(side==="back"&&dB>=lim) break;
+    if(t-start>5) break;
+  }
+  let iu=0;
+  for(const k of zones) iu+=VMAX*sc*zoneArea(k,draft.bot)*
+    (1-Math.exp(-ALPHA*(ZONES[k].a==="front"?sF:sB)/m));
+  return {iu:iu,mins:(t-start)*60,done:dB>=lim*0.98&&iu>200};
+}
+function fcScan(day,which,zones){
+  const curve=[]; let best=null, last=null;
+  for(let t=4;t<21;t+=1/6){
+    const r=fcSim(day,t,which,zones);
+    curve.push({t:t,iu:r.iu,mins:r.mins,done:r.done});
+    if(r.done&&(!best||r.iu/r.mins>best.iu/best.mins)) best={t:t,...r};
+  }
+  if(best){ const floor=0.8*best.iu;
+    for(const c of curve) if(c.done&&c.iu>=floor&&(!last||c.t>last.t)) last=c; }
+  return {best:best,last:last,curve:curve,any:!!best};
+}
+async function pullDays(n){
+  const p=S.p;
+  const u="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
+    +"&hourly=uv_index,uv_index_clear_sky,cloud_cover,precipitation_probability"
+    +"&forecast_days="+n+"&timezone=auto";
+  const r=await fetch(u); if(!r.ok) throw new Error("HTTP "+r.status);
+  const j=await r.json(), hh=j.hourly, tz=j.utc_offset_seconds/3600, D=[];
+  for(let d=0;d<n;d++){
+    const o=d*24; if(hh.time[o]==null) break;
+    D.push({date:hh.time[o].slice(0,10),tz:tz,
+      all:hh.uv_index.slice(o,o+24), cs:hh.uv_index_clear_sky.slice(o,o+24),
+      cc:hh.cloud_cover.slice(o,o+24),
+      pp:(hh.precipitation_probability||[]).slice(o,o+24)});
+  }
+  S.p.days={got:Date.now(),d:D}; save(true);
+  return D;
+}
+const hhmm=t=>{let h=Math.floor(t),m=Math.round((t-h)*60);if(m===60){h++;m=0;}
+  return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");};
+const dur=m=>m>=60?Math.floor(m/60)+"h "+String(Math.round(m%60)).padStart(2,"0")+"m"
+  :Math.round(m)+" min";
+const wd=s=>["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date(s+"T12:00:00").getDay()];
+function uvBand(u){return u<3?"var(--u1)":u<6?"var(--u3)":u<8?"var(--u4)":"var(--u5)";}
+let FCDAY=0;
+
+function vFc(v){
+  $("#ttl").textContent="Outlook"; $("#hdr-r").textContent="";
+  const cache=S.p.days, fresh=cache&&cache.d.length&&cache.d[0].date===today();
+  if(!fresh){
+    $("#sub").textContent="The next few days";
+    const c=el("div","card empty",
+      "<div class='eyebrow'>No forecast yet</div><p>Pulls hourly UV and cloud for your spot, "
+      +"then works out when a session costs you the least time for the most vitamin D.</p>");
+    const b=el("button","btn","Get the forecast");
+    const msg=el("div","note"); msg.style.display="none"; msg.style.marginTop="12px";
+    b.onclick=async()=>{
+      b.disabled=true;b.textContent="Fetching…";msg.style.display="none";
+      try{ await pullDays(7); FCDAY=0; render(); }
+      catch(e){ b.disabled=false;b.textContent="Try again";msg.style.display="block";
+        msg.innerHTML="<b>Couldn't reach the forecast.</b> Check your connection and try again."; }
+    };
+    c.appendChild(b); c.appendChild(msg); v.appendChild(c); return;
+  }
+
+  const days=cache.d, hid=hidden(draft.top,draft.bot);
+  const zones=Object.keys(ZONES).filter(k=>draft.zones.includes(k)&&!hid.includes(k));
+  const zs=zones.length?zones:Object.keys(ZONES);
+  FCDAY=Math.min(FCDAY,days.length-1);
+  $("#sub").textContent=days.length+" days · skin "+S.p.skin+" · "+S.p.posture;
+
+  const ds=el("div","daysel");
+  days.forEach((d,i)=>{
+    const b=el("button"); b.setAttribute("aria-pressed",i===FCDAY);
+    const pk=Math.max(...d.all.filter(x=>x!=null));
+    b.innerHTML="<span class='dw'>"+(d.date===today()?"Today":wd(d.date))+"</span>"
+      +"<span class='dv'>"+pk.toFixed(1)+"</span><span class='du'>peak UV</span>";
+    b.onclick=()=>{FCDAY=i;render();}; ds.appendChild(b);
+  });
+  v.appendChild(ds);
+
+  const d=days[FCDAY], sc=fcScan(d,"all",zs), so=fcScan(d,"cs",zs), nel=fcNoon(d);
+  const b=sc.best;
+
+  if(nel<30) v.appendChild(el("div","ban scr","<span class='g'>▲</span><span>"
+    +"Sun peaks at only "+nel.toFixed(0)+"° — almost no vitamin D today."
+    +"<small>Below about 30° the atmosphere filters out the UVB that makes vitamin D, while the "
+    +"UVA that reddens skin still gets through.</small></span>"));
+
+  const c=el("div","card");
+  if(!sc.any){
+    c.innerHTML="<div class='count'><span class='big'>—</span>"
+      +"<span class='cap'>not worth a session</span>"
+      +"<span class='at'>Too little UVB to dose both sides before the sun drops.</span></div>";
+  }else{
+    c.innerHTML="<div class='count'><span class='big'>"+hhmm(b.t)+"</span>"
+      +"<span class='cap'>best start — "+dur(b.mins)+"</span>"
+      +"<span class='at'>About "+dur(b.mins/2)+" a side, roughly "+cm(b.iu)+" IU. "
+      +"Flip when the app says, not by the clock.</span></div>";
+  }
+  v.appendChild(c);
+
+  if(sc.any){
+    const rain=Math.max(...d.pp.slice(9,19).map(x=>x==null?0:x));
+    const g=el("div","card flush");
+    g.innerHTML="<div class='grid'>"
+     +"<div><div class='k'>Expected</div><div class='v'>"+cm(b.iu)+"<i>IU</i></div></div>"
+     +"<div><div class='k'>If it clears</div><div class='v'>"
+       +(so.any?cm(so.best.iu):"—")+"<i>IU</i></div></div>"
+     +"<div><div class='k'>Cloud then</div><div class='v'>"
+       +(d.cc[Math.round(b.t)]??"—")+"<i>%</i></div></div>"
+     +"<div><div class='k'>Latest start</div><div class='v'>"
+       +(sc.last?hhmm(sc.last.t):"—")+"<i>"+(sc.last?dur(sc.last.mins):"")+"</i></div></div></div>";
+    v.appendChild(g);
+    if(rain>=40) v.appendChild(el("p","hint","Rain is <b>"+rain+"%</b> likely around midday. "
+      +"The UV above already assumes that cloud."));
+  }
+
+  const cc=el("div","card flush");
+  const eb2=el("div","eyebrow","UV through the day"); eb2.style.padding="14px 14px 0";
+  cc.appendChild(eb2);
+  const cv=el("canvas"); cv.style.height="170px"; cc.appendChild(cv);
+  cc.appendChild(el("div","key",
+    "<span><i style='background:var(--store)'></i>expected, with cloud</span>"
+   +"<span><i style='background:var(--rule)'></i>if it clears</span>"
+   +"<span><i style='background:var(--u4)'></i>your window</span>"));
+  v.appendChild(cc);
+
+  const tb=el("div","card flush");
+  let rows="";
+  const top=days.reduce((a,dd,i)=>{const s2=fcScan(dd,"all",zs);
+    return s2.any&&(!a||s2.best.iu/s2.best.mins>a.r)?{r:s2.best.iu/s2.best.mins,i:i}:a;},null);
+  days.forEach((dd,i)=>{
+    const s2=(i===FCDAY)?sc:fcScan(dd,"all",zs);
+    rows+="<tr"+(top&&top.i===i?" class='best'":"")+"><td>"
+      +"<span class='dot' style='background:"+uvBand(Math.max(...dd.all.filter(x=>x!=null)))+"'></span>"
+      +(dd.date===today()?"Today":wd(dd.date)+" "+dd.date.slice(8))+"</td>"
+      +"<td class='n'>"+(s2.any?hhmm(s2.best.t):"—")+"</td>"
+      +"<td class='n'>"+(s2.any?dur(s2.best.mins):"—")+"</td>"
+      +"<td class='n'>"+(s2.any?cm(s2.best.iu):"—")+"</td></tr>";
+  });
+  tb.innerHTML="<table><thead><tr><th>Day</th><th>Start</th><th>Takes</th><th>IU</th></tr></thead>"
+    +"<tbody>"+rows+"</tbody></table>";
+  v.appendChild(tb);
+
+  v.appendChild(el("p","hint","Best start is the time that banks the most vitamin D per minute "
+    +"on the ground. It sits near solar noon because a high sun carries the most UVB relative to "
+    +"the UVA that only reddens skin — later in the day is a worse trade, not a gentler one. "
+    +"Zones come from your session screen. Forecasts past about three days are a shape, not a plan."));
+
+  const rb=el("button","btn ghost sm","Refresh forecast");
+  rb.onclick=async()=>{rb.disabled=true;rb.textContent="Fetching…";
+    try{await pullDays(7);}catch(e){toast("Couldn't reach the forecast.");} render();};
+  v.appendChild(rb);
+
+  requestAnimationFrame(()=>fcChart(cv,d,sc.any?b:null));
+}
+
+function fcChart(cv,d,best){
+  const dpr=Math.min(devicePixelRatio||1,2.5), W=cv.clientWidth, H=170;
+  cv.width=W*dpr; cv.height=H*dpr;
+  const x=cv.getContext("2d"); x.scale(dpr,dpr); x.clearRect(0,0,W,H);
+  const ml=28,mr=12,mt=14,mb=22,t0=4,t1=22;
+  const ymax=Math.max(3,...d.cs.filter(v=>v!=null))*1.12;
+  const X=t=>ml+(t-t0)/(t1-t0)*(W-ml-mr), Y=v=>H-mb-v/ymax*(H-mt-mb);
+  if(best){
+    x.fillStyle="rgba(226,98,27,.15)";
+    x.fillRect(X(best.t),mt,Math.max(2,X(best.t+best.mins/60)-X(best.t)),H-mb-mt);
+    x.strokeStyle="#e2621b"; x.lineWidth=1.4;
+    x.beginPath(); x.moveTo(X(best.t),mt); x.lineTo(X(best.t),H-mb); x.stroke();
+  }
+  x.font="500 9px ui-monospace,monospace"; x.textAlign="right"; x.textBaseline="middle";
+  for(let u=0;u<=ymax;u+=2){
+    x.strokeStyle="#edeae1"; x.lineWidth=1;
+    x.beginPath(); x.moveTo(ml,Y(u)); x.lineTo(W-mr,Y(u)); x.stroke();
+    x.fillStyle="#6b6558"; x.fillText(u,ml-6,Y(u));
+  }
+  const draw=(k,col,fill)=>{
+    x.beginPath(); let st=false;
+    for(let t=t0;t<=t1;t+=.1){const val=fcUV(d,t,k);
+      if(!st){x.moveTo(X(t),Y(val));st=true;} else x.lineTo(X(t),Y(val));}
+    if(fill){x.lineTo(X(t1),Y(0));x.lineTo(X(t0),Y(0));x.closePath();x.fillStyle=fill;x.fill();}
+    else{x.strokeStyle=col;x.lineWidth=2;x.lineJoin="round";x.stroke();}
+  };
+  draw("cs",null,"rgba(216,211,199,.55)");
+  x.setLineDash([4,3]); draw("cs","#c8c2b4"); x.setLineDash([]);
+  draw("all",null,"rgba(43,58,103,.15)");
+  draw("all","#2b3a67");
+  x.font="500 9.5px system-ui"; x.textAlign="center"; x.fillStyle="#6b6558";
+  for(let hr=6;hr<=21;hr+=3) x.fillText(String(hr).padStart(2,"0"),X(hr),H-6);
+  if(best){ x.textAlign="left"; x.font="600 9.5px system-ui"; x.fillStyle="#e2621b";
+    x.fillText("start "+hhmm(best.t),Math.min(X(best.t)+4,W-mr-58),mt+9); }
 }
 
 /* ---- 3. add ------------------------------------------------------ */
@@ -746,12 +1053,16 @@ function vSet(v){
    +" J/m²' disabled></label></div>"
    +"<div class='row'><label class='f'><span>Latitude</span><input class='num' id='la' type='number' step='0.001' value='"+p.lat+"'></label>"
    +"<label class='f'><span>Longitude</span><input class='num' id='lo' type='number' step='0.001' value='"+p.lon+"'></label></div>"
+   +"<div class='row'><label class='f'><span>Height cm</span><input class='num' id='hh' type='number' inputmode='numeric' value='"+(p.h||180)+"'></label>"
+   +"<label class='f'><span>Weight kg</span><input class='num' id='ww' type='number' inputmode='numeric' value='"+(p.w||75)+"'></label></div>"
    +"<div class='row'><label class='f'><span>UTC offset</span><input class='num' id='tz' type='number' step='1' value='"+p.tz+"'></label>"
    +"<label class='f'><span>Peak UVI today</span><input class='num' id='pk' type='number' step='0.1' value='"+p.peak+"'></label></div>"
    +"<label class='f' style='margin:0'><span>Blood 25(OH)D, nmol/L (optional)</span>"
    +"<input class='num' id='bs' type='number' step='1' value='"+p.base+"'></label>"
-   +"<p class='hint'>Leave peak UVI at <b>0</b> unless you're offline and want to hand-tune the "
-   +"model to a forecast peak. A fetched forecast overrides it anyway.</p>";
+   +"<p class='hint'>Du Bois body surface: <b>"+bsa(p.h||180,p.w||75).toFixed(2)+" m²</b>, "
+   +"scaled against a 1.8 m² reference, so synthesis tracks your actual square metres of skin. "
+   +"Leave peak UVI at <b>0</b> unless you're offline and want to hand-tune the model to a "
+   +"forecast peak; a fetched forecast overrides it anyway.</p>";
   v.appendChild(c);
   const lb=el("button","btn ghost sm","Use my location");
   lb.style.marginBottom="9px";
@@ -779,7 +1090,8 @@ function vSet(v){
   $("#sk").onchange=()=>{S.p.skin=$("#sk").value;save(true);render();};
   const sv=el("button","btn","Save");
   sv.onclick=()=>{p.skin=$("#sk").value;p.lat=+$("#la").value;p.lon=+$("#lo").value;
-    p.tz=+$("#tz").value;p.peak=+$("#pk").value;p.base=+$("#bs").value;save(true);
+    p.tz=+$("#tz").value;p.peak=+$("#pk").value;p.base=+$("#bs").value;
+    p.h=+$("#hh").value||180;p.w=+$("#ww").value||75;save(true);
     toast("Saved.");render();};
   v.appendChild(sv);
 
