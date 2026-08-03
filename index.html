@@ -24,6 +24,7 @@
   --paper:#f7f5f0; --card:#fffefb; --ink:#14120e; --ink2:#6b6558;
   --rule:#d8d3c7; --store:#2b3a67; --store-l:#e6e9f2;
   --u1:#2e8b3f; --u2:#8fae1b; --u3:#d99b00; --u4:#e2621b; --u5:#c9243f;
+  --load:#a2603f; --load-hi:#c9243f;
   --pad:18px;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -86,6 +87,10 @@ nav button[aria-current="page"] .g{transform:translateY(-1px)}
   font-variant-numeric:tabular-nums;color:var(--ink2);white-space:nowrap}
 .zl .now{font:600 10px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;
   color:var(--ink);border:1px solid var(--ink);border-radius:3px;padding:2px 4px;margin-left:6px}
+.rail{height:2px;background:#f0ede5;border-radius:1px;overflow:hidden;margin-bottom:3px;position:relative}
+.rail i{display:block;height:100%;border-radius:1px}
+.rail.over::after{content:"";position:absolute;right:0;top:-1px;width:2px;height:4px;
+  background:var(--load-hi)}
 .track{height:12px;background:#ece8de;border-radius:2px;overflow:hidden}
 .track i{display:block;height:100%;border-radius:2px;transition:width .4s linear}
 .z.off .zl b,.z.off .r{color:var(--ink2)}
@@ -230,6 +235,22 @@ const ZONES={
   barms:{a:"back",area:.09,n:"Arms back"},      bthigh:{a:"back",area:.09,n:"Thighs back"},
   bcalf:{a:"back",area:.09,n:"Calves"}
 };
+/* Vitamin D needs UVB. A low sun means a long slant path through ozone, which
+   absorbs UVB while the UVA that reddens skin keeps coming. So erythemal dose
+   and synthesis dose come apart in the evening: below about 20 deg elevation
+   you still burn and make nothing. Erythema uses the raw dose, synthesis uses
+   the gated one - they are tracked separately per zone.                      */
+/* Ramp, not a cliff. Synthesis is effectively nil above ~60 deg solar zenith
+   (20-30 deg elevation) and climbs steeply from there, so full weight is only
+   reached with the sun well up. Raise the 45 to be more generous, lower it to
+   be stricter - it scales every evening estimate.  */
+function uvbGate(e){ return e<=20?0:e>=45?1:(e-20)/25; }
+
+/* Accumulated erythemal load carries across days with a 3-day half-life.
+   Suberythemal doses are not free: CPD-positive cells stay elevated for about
+   48 hours, so back-to-back heavy sessions stack.                            */
+const LOAD_HALF=3;
+
 /* What clothing hides. A t-shirt takes the trunk, a long-sleeved shirt takes
    the arms with it, trousers take everything below the waist. Short shorts
    leave the legs bare but still cover the top of the thigh, so that zone
@@ -260,7 +281,7 @@ let S=load();
 function load(){
   try{const r=JSON.parse(localStorage.getItem(KEY)); if(r&&r.p) return r;}catch(e){}
   return {p:{skin:"IV",lat:55.686,lon:12.481,tz:2,peak:0,base:0,posture:"reclined",h:180,w:75},
-          dep:SEED.map(d=>({date:d[0],iu:d[1],src:d[2],lab:d[3]})), s:null};
+          dep:SEED.map(d=>({date:d[0],iu:d[1],src:d[2],lab:d[3]})), load:[], s:null};
 }
 let saveT=0;
 function save(now){
@@ -288,11 +309,21 @@ function calib(d){ // rescale the curve to a forecast peak UVI, if given
   let best=0; for(let m=0;m<1440;m+=4){const e=elevation(d,m/60,p.tz,p.lat,p.lon); if(e>best)best=e;}
   const b=clearsky(best); return b>0?p.peak/b:1;
 }
-function fetchedCS(d,hr){                 // hourly forecast curve, if we have today's
-  const f=S.p.fc;
-  if(!f||f.date!==iso(d)||!f.cs) return null;
+/* Open-Meteo's clear-sky curve is the trusted source: it knows today's ozone,
+   which the model cannot. The built-in model is only a fallback for when there
+   is no forecast to hand. Cloud is never taken from the forecast - that stays
+   your call, from the chips.  */
+function fcDay(date){
+  const c=S.p.days;
+  if(!c||!c.d) return null;
+  for(const d of c.d) if(d.date===date) return d;
+  return null;
+}
+function fetchedCS(d,hr){                 // hourly clear-sky curve, if we have that day's
+  const day=fcDay(iso(d));
+  if(!day||!day.cs) return null;
   const i=Math.max(0,Math.min(22,Math.floor(hr))), t=Math.min(1,hr-i);
-  const a=f.cs[i], b=f.cs[i+1];
+  const a=day.cs[i], b=day.cs[i+1];
   if(a==null||b==null) return null;
   return a+(b-a)*t;                        // linear between the hourly points
 }
@@ -326,10 +357,26 @@ function addDep(date,iu,src,lab){
   S.dep.sort((a,b)=>a.date<b.date?-1:1); save(true);
 }
 
+/* ---- accumulated erythemal load ---------------------------------- */
+function loadAt(k){                       // carryover for one zone, decayed
+  const n0=dn(today()); let t=0;
+  for(const e of S.load||[]){
+    const n=n0-dn(e.date);
+    if(n>=0&&e.z&&e.z[k]) t+=e.z[k]*Math.pow(.5,n/LOAD_HALF);
+  }
+  return t;
+}
+function recordLoad(){                    // banked once, when a session ends
+  const s=S.s, m=med(), z={};
+  for(const k in s.zones) if(s.zones[k].dose>0) z[k]=s.zones[k].dose/m;
+  if(Object.keys(z).length) S.load.push({date:today(),z:z});
+  if(S.load.length>60) S.load=S.load.slice(-60);
+}
+
 /* ---- session ----------------------------------------------------- */
 function startSession(zones,posture,side,cloud,bot){
   const now=Date.now(), z={};
-  for(const k in ZONES) z[k]={dose:0,screen:false,bare:zones.includes(k),
+  for(const k in ZONES) z[k]={dose:0,sdose:0,screen:false,bare:zones.includes(k),
                               area:zoneArea(k,bot||"shorts")};
   S.s={t0:now,last:now,posture:posture,side:side,cloud:cloud,blocked:false,
        skin:S.p.skin,zones:z,cal:calib(new Date(now)),flipL:false,scrL:false,burnL:false,
@@ -345,9 +392,13 @@ function accrue(){
   while(t<now){
     const dt=Math.min(STEP,now-t), u=uvAt(t+dt/2,s.cloud,s.blocked);
     const irr=u.uvi*geom(s.posture,u.elev)*0.025;
+    const g=uvbGate(u.elev);
     if(irr>0) for(const k in s.zones){
       const z=s.zones[k];
-      if(ZONES[k].a===s.side&&z.bare&&!z.screen) z.dose+=irr*(dt/1000);
+      if(ZONES[k].a===s.side&&z.bare&&!z.screen){
+        z.dose+=irr*(dt/1000);                 // erythemal, drives MED and the bars
+        z.sdose+=irr*g*(dt/1000);              // UVB-weighted, drives vitamin D
+      }
     }
     if(s.side==="front") s.tFront+=dt/1000; else s.tBack+=dt/1000;
     t+=dt;
@@ -355,10 +406,12 @@ function accrue(){
   s.last=now; save();
 }
 function med(){return MED[S.s?S.s.skin:S.p.skin];}
+/* Every zone that ever accrued keeps its vitamin D. Covering a zone stops it
+   earning; it does not undo what it already made.  */
 function vitD(){let t=0;const m=med(),sc=bodyScale();
   for(const k in S.s.zones){const z=S.s.zones[k];
-    if(!z.bare) continue;
-    t+=VMAX*sc*(z.area!=null?z.area:ZONES[k].area)*(1-Math.exp(-ALPHA*z.dose/m));}
+    if(z.sdose<=0) continue;
+    t+=VMAX*sc*(z.area!=null?z.area:ZONES[k].area)*(1-Math.exp(-ALPHA*z.sdose/m));}
   return t;}
 function facing(){const s=S.s,o=[];
   for(const k in s.zones) if(ZONES[k].a===s.side&&s.zones[k].bare&&!s.zones[k].screen) o.push(s.zones[k]);
@@ -366,10 +419,10 @@ function facing(){const s=S.s,o=[];
 function nBare(){let n=0;for(const k in S.s.zones) if(S.s.zones[k].bare) n++;return n;}
 function peakFrac(){const f=facing(),m=med();return f.length?Math.max(...f.map(z=>z.dose))/m:0;}
 function anyBurn(){const m=med();
-  for(const k in S.s.zones) if(S.s.zones[k].bare&&S.s.zones[k].dose/m>=BURN_AT) return true;
+  for(const k in S.s.zones) if(S.s.zones[k].dose/m>=BURN_AT) return true;
   return false;}
 function sideFrac(side){const m=med();let x=0;
-  for(const k in S.s.zones) if(ZONES[k].a===side&&S.s.zones[k].bare) x=Math.max(x,S.s.zones[k].dose/m);
+  for(const k in S.s.zones) if(ZONES[k].a===side) x=Math.max(x,S.s.zones[k].dose/m);
   return x;}
 function toFlip(){ // minutes until the leading facing zone hits the flip threshold
   const s=S.s,m=med(),f=facing(); if(!f.length) return null;
@@ -414,23 +467,30 @@ function locate(){
       e=>no(e), {enableHighAccuracy:false,timeout:12000,maximumAge:6e5});
   });
 }
-async function getForecast(){
+async function pullDays(n){
   const p=S.p;
   const u="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
-    +"&hourly=uv_index,uv_index_clear_sky,cloud_cover&forecast_days=1&timezone=auto";
-  const r=await fetch(u);
-  if(!r.ok) throw new Error("HTTP "+r.status);
-  const j=await r.json(), hh=j.hourly;
-  S.p.fc={date:hh.time[0].slice(0,10), cs:hh.uv_index_clear_sky,
-          all:hh.uv_index, cc:hh.cloud_cover, got:Date.now()};
-  S.p.peak=0;                              // the real curve supersedes the calibration hack
+    +"&hourly=uv_index,uv_index_clear_sky,cloud_cover,precipitation_probability"
+    +"&forecast_days="+n+"&timezone=auto";
+  const r=await fetch(u); if(!r.ok) throw new Error("HTTP "+r.status);
+  const j=await r.json(), hh=j.hourly, tz=j.utc_offset_seconds/3600, D=[];
+  for(let d=0;d<n;d++){
+    const o=d*24; if(hh.time[o]==null) break;
+    D.push({date:hh.time[o].slice(0,10),tz:tz,
+      all:hh.uv_index.slice(o,o+24), cs:hh.uv_index_clear_sky.slice(o,o+24),
+      cc:hh.cloud_cover.slice(o,o+24),
+      pp:(hh.precipitation_probability||[]).slice(o,o+24)});
+  }
+  S.p.days={got:Date.now(),d:D};
+  S.p.peak=0;                              // the real curve supersedes the hand calibration
   save(true);
-  return S.p.fc;
+  return D;
 }
-function fcAge(){const f=S.p.fc; if(!f) return null;
-  if(f.date!==today()) return "stale";
-  const m=(Date.now()-f.got)/6e4;
-  return m<90?"fresh":"old";}
+async function getForecast(){ await pullDays(7); return fcDay(today()); }
+function fcAge(){
+  const c=S.p.days, d=fcDay(today());
+  if(!c||!d) return null;
+  return (Date.now()-c.got)/6e4<180?"fresh":"old";}
 function nowIdx(){const d=new Date();return d.getHours();}
 
 /* ---- helpers ----------------------------------------------------- */
@@ -488,7 +548,6 @@ function vTank(v){
     const tg={sun:"sun",supplement:"sup",diet:"diet"}[d.src]||"diet";
     const nm={sun:"Sun",supplement:"Supp",diet:"Diet"}[d.src]||d.src;
     rows+="<tr><td><span class='d'>"+d.date.slice(5)+"</span><span class='tag "+tg+"'>"+nm+"</span>"
-      +(d.lab?"<span class='lab'>"+esc(d.lab)+"</span>":"")
       +"</td><td class='n'>"+cm(d.iu)+"</td><td class='n'>"+cm(left)+"</td>"
       +"<td class='n' style='color:var(--ink2)'>"+(gone*100).toFixed(0)+"%</td>"
       +"<td style='padding-left:0'><button class='del' data-i='"+i+"' aria-label='Remove'>×</button></td></tr>";
@@ -573,17 +632,17 @@ function vSun(v){
   CLOUD.forEach(([k,n])=>{const b=el("button",null,n);
     b.setAttribute("aria-pressed",draft.cloud===k); b.onclick=()=>{draft.cloud=k;render();}; ch.appendChild(b);});
   c1.querySelector("label").appendChild(ch);
-  const age=fcAge(), f=S.p.fc;
-  let src=age==="stale"||!f
-    ? "Modelled from the sun's angle. Tap Update below for today's real forecast."
-    : "From today's forecast for your spot"+(age==="old"?", fetched a while ago.":".");
+  const age=fcAge(), f=fcDay(today());
+  let src=!f
+    ? "Modelled from the sun's angle — a rough stand-in. Tap below for the real forecast."
+    : "From Open-Meteo's clear-sky forecast for your spot"+(age==="old"?", fetched a while ago.":".");
   c1.appendChild(el("p","hint","Clear-sky UV here is <b>"+now.cs.toFixed(1)
     +"</b> with the sun at <b>"+now.elev.toFixed(0)+"°</b>. "+src
     +" Scattered cloud costs little — about half of UV arrives as diffuse light off the whole sky."));
-  if(f&&age!=="stale"&&f.cc&&f.cc[nowIdx()]!=null)
+  if(f&&f.cc&&f.cc[nowIdx()]!=null)
     c1.appendChild(el("p","hint","The forecast says <b>"+f.cc[nowIdx()]
-      +"% cloud</b> right now — but trust your eyes over a grid square."));
-  const fb=el("button","btn ghost sm",age==="stale"||!f?"Get today's UV and location":"Update UV and location");
+      +"% cloud</b> right now — but trust your eyes over a grid square. Cloud stays your call."));
+  const fb=el("button","btn ghost sm",!f?"Get today's UV and location":"Update UV and location");
   fb.style.marginTop="12px";
   fb.onclick=async()=>{
     fb.disabled=true; fb.textContent="Checking…";
@@ -702,15 +761,21 @@ function vLive(v){
   // zone bars — tap any row to cover or uncover it
   const zc=el("div","card"), m=med();
   zc.appendChild(el("div","eyebrow","Tap a zone to cover or uncover it"));
+  zc.appendChild(el("p","hint","The hairline above each bar is your standing load — this session "
+    +"plus what hasn't repaired from the last few days. It turns red past 80%, which means give "
+    +"that skin a rest day rather than a shorter session."));
   const ks=Object.keys(ZONES).sort((a,b)=>
     (s.zones[b].bare-s.zones[a].bare)||(s.zones[b].dose-s.zones[a].dose));
   ks.forEach(k=>{
     const z=s.zones[k], fr=z.dose/m, up=ZONES[k].a===s.side&&z.bare&&!z.screen;
     const d=el("button","z zbtn"+(up?"":" off")+(z.bare?"":" cov"));
     d.setAttribute("aria-pressed",z.bare);
+    const tot=loadAt(k)+fr, over=tot>1;
     d.innerHTML="<div class='zl'><b>"+ZONES[k].n
       +(!z.bare?"<span class='cvd'>Covered</span>":z.screen?"<span class='cvd'>Screened</span>":"")
       +(up?"<span class='now'>Sun</span>":"")+"</b><span class='r'>"+(fr*100).toFixed(0)+"% MED</span></div>"
+      +"<div class='rail"+(over?" over":"")+"'><i style='width:"+Math.min(100,tot*100).toFixed(1)
+      +"%;background:var("+(tot>.8?"--load-hi":"--load")+")'></i></div>"
       +"<div class='track'><i style='width:"+Math.min(100,fr*100).toFixed(1)+"%;background:"
       +(!z.bare||z.screen?"#b8b2a4":uvcol(fr))+"'></i></div>";
     d.onclick=()=>{accrue();z.bare=!z.bare;
@@ -755,6 +820,7 @@ function vLive(v){
 
 function endSession(){
   accrue(); S.s.ended=true; S.s.iu=Math.round(vitD());
+  if(!S.s.loadRec){ recordLoad(); S.s.loadRec=true; }   // exposure counts even if discarded
   unwake(); save(true); render();
 }
 function vDone(v){
@@ -788,12 +854,6 @@ function vDone(v){
    costing you.
    ================================================================== */
 
-/* Vitamin D needs UVB, and a low sun means a long slant path through ozone,
-   which strips UVB out while the UVA that reddens skin keeps coming. Below
-   about 20 deg there is effectively no synthesis. This is why evening sun is
-   a bad trade: same burn, far less vitamin D.                              */
-function uvbGate(e){ return e<=20?0:e>=30?1:(e-20)/10; }
-
 function fcUV(day,hr,which){
   const a=day[which], i=Math.floor(hr);
   if(i<0||i>22) return 0;
@@ -813,7 +873,7 @@ function fcSim(day,start,which,zones){
   let t=start, side="front", dF=0, dB=0, sF=0, sB=0;
   while(t<22.5){
     const e=elevation(dObj,t,day.tz,S.p.lat,S.p.lon);
-    const irr=fcUV(day,t,which)*geom(S.p.posture,e)*0.025;
+    const irr=fcUV(day,t,which)*geom("flat",e)*0.025;   // flat = the opportunity ceiling
     if(irr<=0){ if(t>start+0.05) break; t+=dt; continue; }
     const j=irr*dt*3600, g=uvbGate(e);
     if(side==="front"){dF+=j;sF+=j*g;} else {dB+=j;sB+=j*g;}
@@ -837,23 +897,6 @@ function fcScan(day,which,zones){
   if(best){ const floor=0.8*best.iu;
     for(const c of curve) if(c.done&&c.iu>=floor&&(!last||c.t>last.t)) last=c; }
   return {best:best,last:last,curve:curve,any:!!best};
-}
-async function pullDays(n){
-  const p=S.p;
-  const u="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
-    +"&hourly=uv_index,uv_index_clear_sky,cloud_cover,precipitation_probability"
-    +"&forecast_days="+n+"&timezone=auto";
-  const r=await fetch(u); if(!r.ok) throw new Error("HTTP "+r.status);
-  const j=await r.json(), hh=j.hourly, tz=j.utc_offset_seconds/3600, D=[];
-  for(let d=0;d<n;d++){
-    const o=d*24; if(hh.time[o]==null) break;
-    D.push({date:hh.time[o].slice(0,10),tz:tz,
-      all:hh.uv_index.slice(o,o+24), cs:hh.uv_index_clear_sky.slice(o,o+24),
-      cc:hh.cloud_cover.slice(o,o+24),
-      pp:(hh.precipitation_probability||[]).slice(o,o+24)});
-  }
-  S.p.days={got:Date.now(),d:D}; save(true);
-  return D;
 }
 const hhmm=t=>{let h=Math.floor(t),m=Math.round((t-h)*60);if(m===60){h++;m=0;}
   return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");};
@@ -886,7 +929,7 @@ function vFc(v){
   const zones=Object.keys(ZONES).filter(k=>draft.zones.includes(k)&&!hid.includes(k));
   const zs=zones.length?zones:Object.keys(ZONES);
   FCDAY=Math.min(FCDAY,days.length-1);
-  $("#sub").textContent=days.length+" days · skin "+S.p.skin+" · "+S.p.posture;
+  $("#sub").textContent=days.length+" days · skin "+S.p.skin+" · lying flat";
 
   const ds=el("div","daysel");
   days.forEach((d,i)=>{
@@ -965,6 +1008,7 @@ function vFc(v){
   v.appendChild(el("p","hint","Best start is the time that banks the most vitamin D per minute "
     +"on the ground. It sits near solar noon because a high sun carries the most UVB relative to "
     +"the UVA that only reddens skin — later in the day is a worse trade, not a gentler one. "
+    +"Times assume lying flat, so they are the best case; reclined or upright takes longer. "
     +"Zones come from your session screen. Forecasts past about three days are a shape, not a plan."));
 
   const rb=el("button","btn ghost sm","Refresh forecast");
@@ -1070,17 +1114,17 @@ function vSet(v){
     try{await locate();toast("Location set.");}catch(e){toast("Location denied or unavailable.");}
     render();};
   v.appendChild(lb);
-  const age=fcAge(), fx=S.p.fc;
+  const age=fcAge(), fx=fcDay(today());
   const uv=el("div","card");
   uv.innerHTML="<div class='eyebrow'>UV data</div><p class='hint'>"
-   +(!fx||age==="stale"
-     ? "Right now UV is <b>modelled</b> from the sun's angle for your coordinates — good, "
-       +"but it can't know today's ozone or haze."
-     : "Using the <b>real hourly forecast</b> for "+fx.date+", peak clear-sky UV <b>"
-       +Math.max(...fx.cs.filter(x=>x!=null)).toFixed(1)+"</b>.")
+   +(!fx
+     ? "Right now UV is <b>modelled</b> from the sun's angle for your coordinates. It can't know "
+       +"today's ozone, so it tends to run a little high — fetch the forecast and it takes over."
+     : "Using <b>Open-Meteo's hourly clear-sky</b> curve for "+fx.date+", peak <b>"
+       +Math.max(...fx.cs.filter(x=>x!=null)).toFixed(1)+"</b>. This overrides the model.")
    +" Fetching pulls from Open-Meteo (free, no account) and sends only your coordinates. "
    +"Everything works offline without it.</p>";
-  const ub=el("button","btn ghost sm","Fetch today's UV forecast");
+  const ub=el("button","btn ghost sm","Fetch UV forecast (7 days)");
   ub.style.marginTop="12px";
   ub.onclick=async()=>{ub.disabled=true;ub.textContent="Fetching…";
     try{await getForecast();toast("Got today's UV curve.");}
