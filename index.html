@@ -327,64 +327,83 @@ const CT=Object.fromEntries(CLOUD.map(c=>[c[0],c[2]]));
 const SEED=[["2026-06-18",9900,"sun","beach, full body"],["2026-07-14",4350,"sun","lake, reclined"],
             ["2026-07-21",3150,"sun","Damhussøen"],["2026-07-29",4063,"sun","session"],
             ["2026-07-30",5200,"sun","session + 5 min front top-up"],
-            ["2026-08-03",3617,"sun","17:10–17:50, reclined"]];
+            ["2026-08-03",3617,"sun","17:10–17:50, reclined",1]];
 
 /* ---- state ------------------------------------------------------- */
+/* Runs on every load and is idempotent, which the old flag-guarded migrations
+   were not: they keyed on a date that a later pass then changed, and one flag
+   got renamed mid-release, so blocks re-ran and appended duplicates. This
+   repairs the damage instead of trusting a flag.
+     - the backfilled 3 Aug session is marked bf:1, so nothing has to identify
+       it by date ever again
+     - duplicate load entries and duplicate sun deposits are collapsed
+     - a real session that an earlier pass mis-dated to 3 Aug is put back  */
+const BF_Z={face:.204,chest:.204,farms:.204,fthigh:.204,fshin:.204,
+            back:.248,barms:.248,bcalf:.248};
+const zsig=z=>Object.keys(z||{}).sort().map(k=>k+":"+(+z[k]).toFixed(6)).join(",");
+function normalise(r){
+  if(!Array.isArray(r.dep)) r.dep=[];
+  if(!Array.isArray(r.load)) r.load=[];
+
+  // 1. undo the mis-dating: an earlier pass moved every 4 Aug sun deposit to
+  //    3 Aug and stamped the backfill's IU onto it. Only the backfill belongs
+  //    on 3 Aug; a session carrying its own note is the user's own and goes back.
+  for(const d of r.dep)
+    if(d.date==="2026-08-03"&&d.src==="sun"&&!d.bf
+       &&d.lab&&d.lab!=="17:10–17:50, reclined"){
+      d.date="2026-08-04"; d.iuSuspect=1;   // its original IU was overwritten
+    }
+
+  // 2. mark the backfill once, then never look it up by date again
+  for(const d of r.dep)
+    if(!d.bf&&d.src==="sun"&&d.date==="2026-08-03"
+       &&(d.lab===""||d.lab==="17:10–17:50, reclined")) d.bf=1;
+
+  // 3. collapse duplicates. Sun deposits identical in date, amount and note
+  //    are duplicates; supplements are left alone, since repeating an
+  //    identical dose on one day is perfectly normal.
+  const seen=new Set();
+  r.dep=r.dep.filter(d=>{
+    if(d.src!=="sun") return true;
+    const k=d.date+"|"+d.iu+"|"+(d.lab||"")+"|"+(d.sid||"");
+    if(seen.has(k)) return false; seen.add(k); return true;
+  });
+  const seenL=new Set();
+  r.load=r.load.filter(e=>{
+    const k=e.date+"|"+(e.sid||"")+"|"+zsig(e.z);
+    if(seenL.has(k)) return false; seenL.add(k); return true;
+  });
+
+  // 4. adopt a surviving 3 Aug load entry as the backfill rather than adding a
+  //    second one beside it, which would double-count the same exposure
+  if(!r.load.some(e=>e.bf)){
+    const m=r.load.find(e=>e.date==="2026-08-03"&&zsig(e.z)===zsig(BF_Z));
+    if(m) m.bf=1;
+  }
+  // 5. make sure the backfill exists exactly once on both ledgers
+  if(!r.dep.some(d=>d.bf))
+    r.dep.push({date:"2026-08-03",iu:3617,src:"sun",lab:"17:10–17:50, reclined",bf:1});
+  if(!r.load.some(e=>e.bf))
+    r.load.push({date:"2026-08-03",z:BF_Z,bf:1});
+
+  // 6. a re-dated session lost its load entry to the dedupe above, since the
+  //    old pass had overwritten it with the backfill's values. Restore the
+  //    pairing so the rail is not silently short.
+  for(const d of r.dep)
+    if(d.iuSuspect&&!r.load.some(e=>e.date===d.date))
+      r.load.push({date:d.date,z:BF_Z});
+
+  r.dep.sort((a,b)=>a.date<b.date?-1:1);
+  return r;
+}
 const KEY="sunwatch.v1";
 let S=load();
 function load(){
   try{const r=JSON.parse(localStorage.getItem(KEY));
-    if(r&&r.p){
-      if(!Array.isArray(r.load)) r.load=[];        // added after the first release
-      if(!Array.isArray(r.dep)) r.dep=[];
-      /* One-off: the 4 Aug 17:10-17:50 session, logged after the fact. An
-         existing install never sees a new SEED entry, so it is added here,
-         guarded so it can only ever happen once.  */
-      /* One-off backfill of the 4 Aug 17:10-17:50 session. Two independent
-         flags on purpose: an earlier build set mig1 and added only the tank
-         deposit, so a single shared flag would lock the load entry out for
-         anyone who already ran it. Each half checks for itself.  */
-      if(!r.p.mig1){
-        r.p.mig1=1;
-        if(!r.dep.some(d=>(d.date==="2026-08-04"||d.date==="2026-08-03")&&d.src==="sun"))
-          r.dep.push({date:"2026-08-03",iu:3617,src:"sun",lab:""});
-        r.dep.sort((a,b)=>a.date<b.date?-1:1);
-      }
-      if(!r.p.mig2){
-        r.p.mig2=1;
-        /* The vitamin D is only half the record: a session also spends
-           erythemal budget, which the load rail carries forward.  */
-        if(!r.load.some(e=>e.date==="2026-08-04"||e.date==="2026-08-03"))
-          r.load.push({date:"2026-08-03",z:{face:.204,chest:.204,farms:.204,fthigh:.204,fshin:.204,back:.248,barms:.248,bcalf:.248}});
-      }
-      if(!r.p.mig5){
-        r.p.mig5=1;
-        /* The session was on 3 Aug, not 4 Aug. A day earlier means the sun sat
-           0.2 deg higher, so the dose and IU shift very slightly up.  */
-        for(const d of r.dep) if(d.date==="2026-08-04"&&d.src==="sun"){
-          d.date="2026-08-03"; d.iu=3617;
-        }
-        for(const e of r.load) if(e.date==="2026-08-04"){
-          e.date="2026-08-03";
-          e.z={face:.204,chest:.204,farms:.204,fthigh:.204,fshin:.204,
-               back:.248,barms:.248,bcalf:.248};
-        }
-        r.dep.sort((a,b)=>a.date<b.date?-1:1);
-      }
-      if(!r.p.mig4){
-        r.p.mig4=1;
-        /* Corrected once the actual session was known: 17 min front up, then
-           23 min back up with the back torso, arms and calves bare and the
-           thighs covered. Front reached 0.202 MED, the back 0.246 - longer,
-           but under a lower sun. 85.5% of body surface exposed overall.  */
-        for(const d of r.dep) if(d.date==="2026-08-04"&&d.src==="sun") d.iu=3571;
-        for(const e of r.load) if(e.date==="2026-08-04") e.z={face:.202,chest:.202,farms:.202,fthigh:.202,fshin:.202,back:.246,barms:.246,bcalf:.246};
-      }
-      return r;
-    }}catch(e){}
+    if(r&&r.p){ normalise(r); return r; }}catch(e){}
   return {p:{skin:"IV",lat:55.686,lon:12.481,tz:2,peak:0,base:0,posture:"reclined",h:180,w:75},
-          dep:SEED.map(d=>({date:d[0],iu:d[1],src:d[2],lab:d[3]})),
-          load:[{date:"2026-08-03",z:{face:.204,chest:.204,farms:.204,fthigh:.204,fshin:.204,back:.248,barms:.248,bcalf:.248}}],
+          dep:SEED.map(d=>({date:d[0],iu:d[1],src:d[2],lab:d[3],bf:d[4]||undefined})),
+          load:[{date:"2026-08-03",z:BF_Z,bf:1}],
           s:null};
 }
 let saveT=0;
@@ -628,6 +647,8 @@ async function pullDays(n){
   return D;
 }
 async function getForecast(){ await pullDays(7); return fcDay(today()); }
+const UVSRC={dmi:"DMI regional model",default:"Open-Meteo global model"};
+const uvsrcName=()=>fcDay(today())?(UVSRC[S.p.uvsrc]||UVSRC.default):"built-in clear-sky model";
 function fcAge(){
   const c=S.p.days, d=fcDay(today());
   if(!c||!d) return null;
@@ -689,6 +710,8 @@ function vTank(v){
     const tg={sun:"sun",supplement:"sup",diet:"diet"}[d.src]||"diet";
     const nm={sun:"Sun",supplement:"Supp",diet:"Diet"}[d.src]||d.src;
     rows+="<tr><td><span class='d'>"+d.date.slice(5)+"</span><span class='tag "+tg+"'>"+nm+"</span>"
+      +(d.iuSuspect?"<span class='lab' style='color:var(--u4)'>amount overwritten by an "
+        +"earlier update — check it</span>":"")
       +"</td><td class='n'>"+cm(d.iu)+"</td><td class='n'>"+cm(left)+"</td>"
       +"<td class='n' style='color:var(--ink2)'>"+(gone*100).toFixed(0)+"%</td>"
       +"<td style='padding-left:0'><button class='del' data-i='"+i+"' aria-label='Remove'>×</button></td></tr>";
@@ -771,7 +794,8 @@ function vSun(v){
   if(S.s) return S.s.ended?vDone(v):vLive(v);
   $("#ttl").textContent="New session"; $("#sub").textContent="Check what the sun can actually reach";
   const now=uvAt(Date.now(),draft.cloud,false);
-  $("#hdr-r").textContent="UV "+now.uvi.toFixed(1);
+  $("#hdr-r").textContent="UV "+now.uvi.toFixed(1)+" · "+(fcDay(today())
+    ?(S.p.uvsrc==="dmi"?"DMI":"global"):"modelled");
 
   const c1=el("div","card");
   c1.innerHTML="<label class='f'><span>Cloud right now</span></label>";
@@ -781,8 +805,9 @@ function vSun(v){
   c1.querySelector("label").appendChild(ch);
   const age=fcAge(), f=fcDay(today());
   let src=!f
-    ? "Modelled from the sun's angle — a rough stand-in. Tap below for the real forecast."
-    : "From Open-Meteo's clear-sky forecast for your spot"+(age==="old"?", fetched a while ago.":".");
+    ? "From the <b>built-in clear-sky model</b> — the sun's angle only, a rough stand-in. "
+      +"Tap below for a real forecast."
+    : "From the <b>"+uvsrcName()+"</b> clear-sky forecast"+(age==="old"?", fetched a while ago.":".");
   c1.appendChild(el("p","hint","Clear-sky UV here is <b>"+now.cs.toFixed(1)
     +"</b> with the sun at <b>"+now.elev.toFixed(0)+"°</b>. "+src
     +" Scattered cloud costs little — about half of UV arrives as diffuse light off the whole sky."));
@@ -793,9 +818,12 @@ function vSun(v){
   fb.style.marginTop="12px";
   fb.onclick=async()=>{
     fb.disabled=true; fb.textContent="Checking…";
-    try{ await locate(); }catch(e){ toast("Couldn't get location — set it in Setup."); }
-    try{ await getForecast(); toast("Updated for "+S.p.lat+", "+S.p.lon+"."); }
-    catch(e){ toast("No connection — using the built-in model."); }
+    let located=true;
+    try{ await locate(); }catch(e){ located=false; }
+    try{
+      await getForecast();
+      toast((located?"Updated":"Kept your saved location")+" — "+uvsrcName()+".");
+    }catch(e){ toast("Couldn't reach the forecast — using the built-in model."); }
     render();
   };
   c1.appendChild(fb);
@@ -862,7 +890,8 @@ function vLive(v){
   $("#ttl").textContent=s.paused?"Paused":(s.side==="front"?"Front up":"Back up");
   $("#sub").textContent=s.posture+" · skin "+s.skin+(s.paused?" · nothing accruing":"");
   const u=uvAt(Date.now(),s.cloud,s.blocked);
-  $("#hdr-r").textContent="UV "+u.uvi.toFixed(1);
+  $("#hdr-r").textContent="UV "+u.uvi.toFixed(1)+" · "+(fcDay(today())
+    ?(S.p.uvsrc==="dmi"?"DMI":"global"):"modelled");
 
   // banner
   const f=peakFrac();
@@ -1076,7 +1105,8 @@ function vFc(v){
   const zones=Object.keys(ZONES).filter(k=>draft.zones.includes(k)&&!hid.includes(k));
   const zs=zones.length?zones:Object.keys(ZONES);
   FCDAY=Math.min(FCDAY,days.length-1);
-  $("#sub").textContent=days.length+" days · skin "+S.p.skin+" · lying flat";
+  $("#sub").textContent=days.length+" days · "+(S.p.uvsrc==="dmi"?"DMI":"global model")
+    +" · skin "+S.p.skin+" · flat";
 
   const ds=el("div","daysel");
   days.forEach((d,i)=>{
@@ -1259,7 +1289,8 @@ function vSet(v){
   const lb=el("button","btn ghost sm","Use my location");
   lb.style.marginBottom="9px";
   lb.onclick=async()=>{lb.disabled=true;lb.textContent="Locating…";
-    try{await locate();toast("Location set.");}catch(e){toast("Location denied or unavailable.");}
+    try{await locate();toast("Location set to "+S.p.lat+", "+S.p.lon+".");}
+    catch(e){toast("No fix available — keeping "+S.p.lat+", "+S.p.lon+".");}
     render();};
   v.appendChild(lb);
   const age=fcAge(), fx=fcDay(today());
@@ -1268,12 +1299,16 @@ function vSet(v){
    +(!fx
      ? "Right now UV is <b>modelled</b> from the sun's angle for your coordinates. It can't know "
        +"today's ozone, so it tends to run a little high — fetch the forecast and it takes over."
-     : "Using the <b>"+(S.p.uvsrc==="dmi"?"DMI regional model":"Open-Meteo default model")
-       +"</b> hourly clear-sky curve for "+fx.date+", peak <b>"
+     : "Using the <b>"+uvsrcName()+"</b> hourly clear-sky curve for "+fx.date+", peak <b>"
        +Math.max(...fx.cs.filter(x=>x!=null)).toFixed(1)+"</b>. This overrides the model."
        +(S.p.o3?" Ozone works out at <b>"+S.p.o3+" DU</b> from that curve, which sets how much "
          +"UVB survives the trip.":""))
-   +" Fetching pulls from Open-Meteo (free, no account) and sends only your coordinates. "
+   +(fx&&S.p.uvsrc==="default"
+     ? " <b>DMI's own model didn't return usable data, so this is the global fallback.</b>"
+     : "")
+   +" Fetching goes through Open-Meteo, asking for DMI's HARMONIE AROME regional model first "
+   +"(2 km over Denmark) and falling back to the global model only if that fails. "
+   +"It sends only your coordinates. "
    +"Everything works offline without it.</p>";
   const ub=el("button","btn ghost sm","Fetch UV forecast (7 days)");
   ub.style.marginTop="12px";
@@ -1338,6 +1373,7 @@ document.addEventListener("visibilitychange",()=>{
 window.addEventListener("pagehide",()=>save(true));
 window.addEventListener("resize",()=>{if(TAB==="tank") render();});
 if(S.s) TAB="sun";
+save(true);       // persist any repair immediately, so it cannot be lost
 render();
 </script>
 </body>
