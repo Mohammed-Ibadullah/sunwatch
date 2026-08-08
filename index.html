@@ -327,7 +327,7 @@ const CT=Object.fromEntries(CLOUD.map(c=>[c[0],c[2]]));
 const SEED=[["2026-06-18",9900,"sun","beach, full body"],["2026-07-14",4350,"sun","lake, reclined"],
             ["2026-07-21",3150,"sun","Damhussøen"],["2026-07-29",4063,"sun","session"],
             ["2026-07-30",5200,"sun","session + 5 min front top-up"],
-            ["2026-08-04",3571,"sun","17:10–17:50, reclined"]];
+            ["2026-08-03",3617,"sun","17:10–17:50, reclined"]];
 
 /* ---- state ------------------------------------------------------- */
 const KEY="sunwatch.v1";
@@ -346,16 +346,30 @@ function load(){
          anyone who already ran it. Each half checks for itself.  */
       if(!r.p.mig1){
         r.p.mig1=1;
-        if(!r.dep.some(d=>d.date==="2026-08-04"&&d.src==="sun"))
-          r.dep.push({date:"2026-08-04",iu:3649,src:"sun",lab:""});
+        if(!r.dep.some(d=>(d.date==="2026-08-04"||d.date==="2026-08-03")&&d.src==="sun"))
+          r.dep.push({date:"2026-08-03",iu:3617,src:"sun",lab:""});
         r.dep.sort((a,b)=>a.date<b.date?-1:1);
       }
       if(!r.p.mig2){
         r.p.mig2=1;
         /* The vitamin D is only half the record: a session also spends
            erythemal budget, which the load rail carries forward.  */
-        if(!r.load.some(e=>e.date==="2026-08-04"))
-          r.load.push({date:"2026-08-04",z:{face:.202,chest:.202,farms:.202,fthigh:.202,fshin:.202,back:.246,barms:.246,bcalf:.246}});
+        if(!r.load.some(e=>e.date==="2026-08-04"||e.date==="2026-08-03"))
+          r.load.push({date:"2026-08-03",z:{face:.204,chest:.204,farms:.204,fthigh:.204,fshin:.204,back:.248,barms:.248,bcalf:.248}});
+      }
+      if(!r.p.mig5){
+        r.p.mig5=1;
+        /* The session was on 3 Aug, not 4 Aug. A day earlier means the sun sat
+           0.2 deg higher, so the dose and IU shift very slightly up.  */
+        for(const d of r.dep) if(d.date==="2026-08-04"&&d.src==="sun"){
+          d.date="2026-08-03"; d.iu=3617;
+        }
+        for(const e of r.load) if(e.date==="2026-08-04"){
+          e.date="2026-08-03";
+          e.z={face:.204,chest:.204,farms:.204,fthigh:.204,fshin:.204,
+               back:.248,barms:.248,bcalf:.248};
+        }
+        r.dep.sort((a,b)=>a.date<b.date?-1:1);
       }
       if(!r.p.mig4){
         r.p.mig4=1;
@@ -370,7 +384,7 @@ function load(){
     }}catch(e){}
   return {p:{skin:"IV",lat:55.686,lon:12.481,tz:2,peak:0,base:0,posture:"reclined",h:180,w:75},
           dep:SEED.map(d=>({date:d[0],iu:d[1],src:d[2],lab:d[3]})),
-          load:[{date:"2026-08-04",z:{face:.202,chest:.202,farms:.202,fthigh:.202,fshin:.202,back:.246,barms:.246,bcalf:.246}}],
+          load:[{date:"2026-08-03",z:{face:.204,chest:.204,farms:.204,fthigh:.204,fshin:.204,back:.248,barms:.248,bcalf:.248}}],
           s:null};
 }
 let saveT=0;
@@ -442,8 +456,9 @@ function levelAt(day){let t=0;const n0=typeof day==="string"?dn(day):day;
   for(const d of S.dep){const n=n0-dn(d.date); if(n>=0) t+=d.iu*Math.pow(.5,n/HALF);} return t;}
 function pace(days=30){const hi=dn(today()),lo=hi-days+1;let t=0;
   for(const d of S.dep){const n=dn(d.date); if(n>=lo&&n<=hi) t+=d.iu;} return t/days;}
-function addDep(date,iu,src,lab){
-  S.dep.push({date:date,iu:Math.round(iu*10)/10,src:src,lab:lab||""});
+function addDep(date,iu,src,lab,sid){
+  S.dep.push({date:date,iu:Math.round(iu*10)/10,src:src,lab:lab||"",
+              sid:sid||undefined});
   S.dep.sort((a,b)=>a.date<b.date?-1:1); save(true);
 }
 
@@ -456,11 +471,21 @@ function loadAt(k){                       // carryover for one zone, decayed
   }
   return t;
 }
+/* Which load entries belong to a deposit. Sessions logged from the timer carry
+   a shared sid on both ledgers, so the match is exact. Entries predating the
+   sid - the backfilled 3 Aug session - are paired on date and source instead,
+   which is the best available and is why a deposit must be a sun session to
+   drag any load with it at all.  */
+function loadFor(dep){
+  if(!dep||dep.src!=="sun") return [];
+  return (S.load||[]).filter(e=>dep.sid?e.sid===dep.sid
+                                       :(!e.sid&&e.date===dep.date));
+}
 function recordLoad(){                    // banked once, when a session ends
   if(!Array.isArray(S.load)) S.load=[];
   const s=S.s, m=med(), z={};
   for(const k in s.zones) if(s.zones[k].dose>0) z[k]=s.zones[k].dose/m;
-  if(Object.keys(z).length) S.load.push({date:today(),z:z});
+  if(Object.keys(z).length) S.load.push({date:today(),z:z,sid:s.sid});
   if(S.load.length>60) S.load=S.load.slice(-60);
 }
 
@@ -471,7 +496,7 @@ function startSession(zones,posture,side,cloud,bot){
                               area:zoneArea(k,bot||"shorts")};
   S.s={t0:now,last:now,posture:posture,side:side,cloud:cloud,blocked:false,
        skin:S.p.skin,zones:z,cal:calib(new Date(now)),flipL:false,scrL:false,burnL:false,
-       tFront:0,tBack:0,paused:false,log:[]};
+       tFront:0,tBack:0,paused:false,sid:"s"+now+"-"+Math.random().toString(36).slice(2,7),log:[]};
   logs("Session started");
   save(true); wake();
 }
@@ -564,11 +589,31 @@ function locate(){
 }
 async function pullDays(n){
   const p=S.p;
-  const u="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
+  /* dmi_seamless is DMI's own HARMONIE AROME DINI regional model, 2 km over
+     Denmark, re-served by Open-Meteo, falling back to ECMWF IFS HRES past its
+     native ~2.5-day horizon. Much closer to home than the GFS global grid the
+     default uses. Not identical to dmi.dk's own UV chart - that product uses a
+     dedicated erythemal radiative-transfer scheme - so expect it to track the
+     DMI site more closely than GFS did, not to match it number for number.
+     If the regional model does not return a usable clear-sky series, fall back
+     to the default source rather than losing the forecast entirely.  */
+  const base="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
     +"&hourly=uv_index,uv_index_clear_sky,cloud_cover,precipitation_probability"
     +"&forecast_days="+n+"&timezone=auto";
-  const r=await fetch(u); if(!r.ok) throw new Error("HTTP "+r.status);
-  const j=await r.json(), hh=j.hourly, tz=j.utc_offset_seconds/3600, D=[];
+  let j=null, src="dmi";
+  for(const attempt of ["&models=dmi_seamless",""]){
+    try{
+      const r=await fetch(base+attempt);
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      const g=await r.json();
+      if(g.hourly&&g.hourly.uv_index_clear_sky
+         &&g.hourly.uv_index_clear_sky.some(v=>v!=null&&v>0)){ j=g; break; }
+    }catch(e){}
+    src="default";
+  }
+  if(!j) throw new Error("no usable forecast");
+  S.p.uvsrc=src;
+  const hh=j.hourly, tz=j.utc_offset_seconds/3600, D=[];
   for(let d=0;d<n;d++){
     const o=d*24; if(hh.time[o]==null) break;
     D.push({date:hh.time[o].slice(0,10),tz:tz,
@@ -653,7 +698,13 @@ function vTank(v){
     +"<td class='n'>"+cm(L)+"</td><td colspan='2'></td></tr></tfoot></table>";
   v.appendChild(tb);
   tb.querySelectorAll(".del").forEach(b=>b.onclick=()=>{
-    if(confirm("Remove this deposit?")){S.dep.splice(+b.dataset.i,1);save(true);render();}});
+    const d=S.dep[+b.dataset.i], hasLoad=d&&loadFor(d).length;
+    if(confirm(hasLoad
+        ?"Remove this session? Its burn record comes off the load rail too."
+        :"Remove this deposit?")){
+      if(d) for(const e of loadFor(d)) S.load.splice(S.load.indexOf(e),1);
+      S.dep.splice(+b.dataset.i,1); save(true); render();
+    }});
 
   const lo=S.p.base+L*NM_LO, hi=S.p.base+L*NM_HI;
   v.appendChild(el("div","card","<div class='eyebrow'>What that's worth</div>"
@@ -935,7 +986,7 @@ function vDone(v){
     +esc(s.posture+", "+Object.keys(s.zones).length+" zones")+"'></label>";
   v.appendChild(f);
   const b1=el("button","btn","Log to tank");
-  b1.onclick=()=>{addDep(today(),+$("#liu").value||0,"sun",$("#llab").value);
+  b1.onclick=()=>{addDep(today(),+$("#liu").value||0,"sun",$("#llab").value,s.sid);
     S.s=null;save(true);toast("Logged. Tank now "+cm(levelAt(today()))+" IU-eq.");go("tank");};
   const b2=el("button","btn ghost","Discard");
   b2.style.marginTop="9px";
@@ -1217,7 +1268,8 @@ function vSet(v){
    +(!fx
      ? "Right now UV is <b>modelled</b> from the sun's angle for your coordinates. It can't know "
        +"today's ozone, so it tends to run a little high — fetch the forecast and it takes over."
-     : "Using <b>Open-Meteo's hourly clear-sky</b> curve for "+fx.date+", peak <b>"
+     : "Using the <b>"+(S.p.uvsrc==="dmi"?"DMI regional model":"Open-Meteo default model")
+       +"</b> hourly clear-sky curve for "+fx.date+", peak <b>"
        +Math.max(...fx.cs.filter(x=>x!=null)).toFixed(1)+"</b>. This overrides the model."
        +(S.p.o3?" Ozone works out at <b>"+S.p.o3+" DU</b> from that curve, which sets how much "
          +"UVB survives the trip.":""))
