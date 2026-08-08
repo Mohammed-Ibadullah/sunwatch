@@ -401,7 +401,8 @@ let S=load();
 function load(){
   try{const r=JSON.parse(localStorage.getItem(KEY));
     if(r&&r.p){ normalise(r); return r; }}catch(e){}
-  return {p:{skin:"IV",lat:55.686,lon:12.481,tz:2,peak:0,base:0,posture:"reclined",h:180,w:75},
+  return {p:{skin:"IV",lat:55.686,lon:12.481,tz:2,peak:0,base:0,posture:"reclined",h:180,w:75,
+             omCorr:0.85},
           dep:SEED.map(d=>({date:d[0],iu:d[1],src:d[2],lab:d[3],bf:d[4]||undefined})),
           load:[{date:"2026-08-03",z:BF_Z,bf:1}],
           s:null};
@@ -606,31 +607,30 @@ function locate(){
       e=>no(e), {enableHighAccuracy:false,timeout:12000,maximumAge:6e5});
   });
 }
-/* ---- DMI's own UV product ------------------------------------------
-   DMI publishes UV directly, which no weather model in Open-Meteo does:
-     nuv_clear_cloud  hourly clear-sky and all-sky UV for today
-     json/id/<ID>     UVmax per day, ten days out
-     ninjo2dmidk      resolves coordinates to a DMI location ID
-   Only today is hourly. Later days are a single daily maximum, so the shape
-   of the day still has to come from Open-Meteo; DMI just sets its height.  */
-async function dmiJSON(url){
-  const r=await fetch(url,{cache:"no-store"});
-  if(!r.ok) throw new Error("HTTP "+r.status);
-  return r.json();
+/* ---- DMI, via the GitHub Action cache -------------------------------
+   dmi.dk blocks browser-origin reads (no Access-Control-Allow-Origin), so
+   the app never calls DMI directly - a scheduled Action fetches it
+   server-side and commits data/dmi.json, which is same-origin here and
+   reads with a plain fetch. The Action always polls one fixed location,
+   so the data is only meaningful near home; past 30 km we fall back to
+   Open-Meteo with a manual correction factor instead.
+     today      DMI's own hourly clear-sky AND all-sky curve, used whole
+     later days DMI UVmax only, so Open-Meteo supplies the shape and each
+                day is rescaled to match that peak                        */
+const HOME={lat:55.686,lon:12.481}, HOME_KM=30;
+function kmFromHome(){
+  const dLat=(S.p.lat-HOME.lat)*111;
+  const dLon=(S.p.lon-HOME.lon)*111*Math.cos(HOME.lat*Math.PI/180);
+  return Math.sqrt(dLat*dLat+dLon*dLon);
 }
-async function dmiId(lat,lon){
-  if(S.p.dmiId&&S.p.dmiIdFor===lat.toFixed(2)+","+lon.toFixed(2)) return S.p.dmiId;
-  const j=await dmiJSON("https://www.dmi.dk/NinJo2DmiDk/ninjo2dmidk?cmd=llj&lon="
-    +lon.toFixed(2)+"&lat="+lat.toFixed(2)+"&hrs=24");
-  if(!j||!j.id) throw new Error("no DMI id");
-  S.p.dmiId=String(j.id); S.p.dmiIdFor=lat.toFixed(2)+","+lon.toFixed(2);
-  S.p.dmiCity=j.city||"";
-  return S.p.dmiId;
-}
-/* hourly clear-sky and all-sky UV for today, as 24-slot arrays */
-async function dmiToday(){
-  const j=await dmiJSON("https://www.dmi.dk/dmidk_byvejrWS/rest/json/nuv_clear_cloud");
-  const L=j&&j.List; if(!L||!L.length) throw new Error("no DMI hourly UV");
+const atHome=()=>kmFromHome()<HOME_KM;
+
+async function loadHomeDMI(){
+  const r=await fetch("./data/dmi.json",{cache:"no-store"});
+  if(!r.ok) throw new Error("no cached DMI file");
+  const j=await r.json();
+  const L=j&&j.today&&j.today.List;
+  if(!L||!L.length) throw new Error("bad DMI file");
   const cs=Array(24).fill(null), all=Array(24).fill(null);
   let date=null;
   for(const e of L){
@@ -641,24 +641,18 @@ async function dmiToday(){
   }
   for(let i=0;i<24;i++) if(cs[i]==null){ cs[i]=0; all[i]=0; }   // pre-dawn gap
   if(!cs.some(v=>v>0)) throw new Error("DMI hourly UV all zero");
-  return {date:date,cs:cs,all:all};
-}
-/* daily clear-sky UVmax, ten days out */
-async function dmiMax(lat,lon){
-  const id=await dmiId(lat,lon);
-  const j=await dmiJSON("https://www.dmi.dk/dmidk_byvejrWS/rest/json/id/"+id);
-  if(!j||!Array.isArray(j.UVs)) throw new Error("no DMI UVmax");
-  const m={}; for(const u of j.UVs) if(u.Date&&u.UVmax!=null) m[u.Date]=+u.UVmax;
-  return m;
+  const mx={};
+  if(j.max&&Array.isArray(j.max.UVs))
+    for(const u of j.max.UVs) if(u.Date&&u.UVmax!=null) mx[u.Date]=+u.UVmax;
+  return {date:date,cs:cs,all:all,mx:mx,age:Date.now()-(j.fetched_at||0)};
 }
 
 async function pullDays(n){
   const p=S.p;
   /* Open-Meteo supplies the shape of each day plus cloud and rain. DMI then
-     sets the height: its hourly curve replaces today outright, and each later
-     day is scaled so its peak matches DMI's UVmax. The shape is a smooth
-     function of solar geometry and is the part a global model gets right; the
-     magnitude depends on ozone and aerosol, which is what DMI measures.  */
+     sets the height. The shape is a smooth function of solar geometry and is
+     the part a global model gets right; the magnitude depends on ozone and
+     aerosol, which is what DMI measures.  */
   const u="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
     +"&hourly=uv_index,uv_index_clear_sky,cloud_cover,precipitation_probability"
     +"&forecast_days="+n+"&timezone=auto";
@@ -673,27 +667,35 @@ async function pullDays(n){
   }
   if(!D.length) throw new Error("no usable forecast");
 
-  const [tR,mR]=await Promise.allSettled([dmiToday(),dmiMax(p.lat,p.lon)]);
-  let hourly=false, scaled=0;
+  const home=atHome();
+  let dmi=null;
+  if(home){ try{ dmi=await loadHomeDMI(); }catch(e){ dmi=null; } }
 
-  if(tR.status==="fulfilled"){                      // today, measured hourly
-    const t=tR.value, day=D.find(x=>x.date===t.date);
-    if(day){ day.cs=t.cs; day.all=t.all; day.dmi="hourly"; hourly=true; }
-  }
-  if(mR.status==="fulfilled"){                      // later days, peak-matched
-    const mx=mR.value;
-    for(const day of D){
-      if(day.dmi==="hourly") continue;
-      const want=mx[day.date]; if(!(want>0)) continue;
-      const have=Math.max(...day.cs.filter(v=>v!=null));
+  if(dmi){
+    const day=D.find(x=>x.date===dmi.date);           // today, DMI's own hourly
+    if(day){ day.cs=dmi.cs; day.all=dmi.all; day.dmi="hourly"; }
+    for(const dd of D){                               // later days, peak-matched
+      if(dd.dmi==="hourly") continue;
+      const want=dmi.mx[dd.date]; if(!(want>0)) continue;
+      const have=Math.max(...dd.cs.filter(v=>v!=null));
       if(!(have>0)) continue;
       const k=want/have;
-      day.cs=day.cs.map(v=>v==null?null:+(v*k).toFixed(3));
-      day.all=day.all.map(v=>v==null?null:+(v*k).toFixed(3));
-      day.dmi="scaled"; day.k=+k.toFixed(3); scaled++;
+      dd.cs=dd.cs.map(v=>v==null?null:+(v*k).toFixed(3));
+      dd.all=dd.all.map(v=>v==null?null:+(v*k).toFixed(3));
+      dd.dmi="scaled"; dd.k=+k.toFixed(3);
     }
+    S.p.uvsrc = dmi.age/36e5<6 ? "dmi" : "dmi-stale";  // no fresh commit in 6 h
+    S.p.dmiAge = dmi.age;
+  }else{
+    const k=+S.p.omCorr>0?+S.p.omCorr:0.85;   // Open-Meteo overshoots; correct it flat
+    for(const dd of D){
+      dd.cs=dd.cs.map(v=>v==null?null:+(v*k).toFixed(3));
+      dd.all=dd.all.map(v=>v==null?null:+(v*k).toFixed(3));
+      dd.dmi="corrected"; dd.k=k;
+    }
+    S.p.uvsrc = home?"om-corr-nofile":"om-corr";
+    S.p.dmiAge = null;
   }
-  S.p.uvsrc = hourly&&scaled ? "dmi" : hourly ? "dmi-today" : scaled ? "dmi-scaled" : "om";
   S.p.days={got:Date.now(),d:D};
   const o3=estimateO3(D[0]); if(o3) S.p.o3=o3;
   S.p.peak=0;                              // the real curve supersedes the hand calibration
@@ -702,12 +704,18 @@ async function pullDays(n){
 }
 async function getForecast(){ await pullDays(7); return fcDay(today()); }
 const UVSRC={dmi:"DMI measured UV",
-             "dmi-today":"DMI hourly today, Open-Meteo beyond",
-             "dmi-scaled":"Open-Meteo shape, DMI peaks",
+             "dmi-stale":"DMI measured UV, but the cache is stale",
+             "om-corr":"Open-Meteo, corrected — away from home",
+             "om-corr-nofile":"Open-Meteo, corrected — no DMI cache",
              om:"Open-Meteo only"};
 const uvsrcName=()=>fcDay(today())?(UVSRC[S.p.uvsrc]||UVSRC.om):"built-in clear-sky model";
 const uvsrcTag=()=>{const s=S.p.uvsrc;
-  return !fcDay(today())?"modelled":s==="om"?"O-M":s==="dmi"?"DMI":"DMI*";};
+  if(!fcDay(today())) return "modelled";
+  if(s==="dmi") return "DMI";
+  if(s==="dmi-stale") return "DMI old";
+  if(s==="om-corr"||s==="om-corr-nofile")
+    return "O-M×"+(+S.p.omCorr>0?+S.p.omCorr:0.85);
+  return "O-M";};
 function fcAge(){
   const c=S.p.days, d=fcDay(today());
   if(!c||!d) return null;
@@ -1337,6 +1345,8 @@ function vSet(v){
    +"<label class='f'><span>Weight kg</span><input class='num' id='ww' type='number' inputmode='numeric' value='"+(p.w||75)+"'></label></div>"
    +"<div class='row'><label class='f'><span>UTC offset</span><input class='num' id='tz' type='number' step='1' value='"+p.tz+"'></label>"
    +"<label class='f'><span>Peak UVI today</span><input class='num' id='pk' type='number' step='0.1' value='"+p.peak+"'></label></div>"
+   +"<label class='f'><span>Away-from-home correction</span>"
+   +"<input class='num' id='oc' type='number' step='0.01' value='"+(p.omCorr??0.85)+"'></label>"
    +"<label class='f' style='margin:0'><span>Blood 25(OH)D, nmol/L (optional)</span>"
    +"<input class='num' id='bs' type='number' step='1' value='"+p.base+"'></label>"
    +"<p class='hint'>Du Bois body surface: <b>"+bsa(p.h||180,p.w||75).toFixed(2)+" m²</b>, "
@@ -1357,19 +1367,25 @@ function vSet(v){
    +(!fx
      ? "Right now UV is <b>modelled</b> from the sun's angle for your coordinates. It can't know "
        +"today's ozone, so it tends to run a little high — fetch the forecast and it takes over."
-     : "Using the <b>"+uvsrcName()+"</b> hourly clear-sky curve for "+fx.date+", peak <b>"
+     : "Using the <b>"+uvsrcName()+"</b> curve for "+fx.date+", peak <b>"
        +Math.max(...fx.cs.filter(x=>x!=null)).toFixed(1)+"</b>. This overrides the model."
        +(S.p.o3?" Ozone works out at <b>"+S.p.o3+" DU</b> from that curve, which sets how much "
          +"UVB survives the trip.":""))
-   +(fx&&S.p.uvsrc==="om"
-     ? " <b>DMI didn't respond, so this is Open-Meteo alone.</b> If that keeps happening in the "
-       +"browser it is almost certainly CORS: dmi.dk serves these endpoints for its own site and "
-       +"may not allow other origins to read them."
-     : fx&&S.p.uvsrc!=="dmi"
-       ? " <b>Only part of the DMI data came through.</b>":"")
-   +" Today's curve is DMI's own hourly clear-sky UV; later days take their shape from "
-   +"Open-Meteo and are rescaled so each peak matches DMI's daily UVmax"
-   +(S.p.dmiCity?" for "+esc(S.p.dmiCity):"")+". Cloud stays your call, from the chips. "
+   +(fx&&S.p.uvsrc==="dmi-stale"
+     ? " <b>The DMI cache is "+Math.round((S.p.dmiAge||0)/36e5)+" h old.</b> The scheduled job "
+       +"that refreshes it hasn't committed recently — check the Actions tab."
+     : fx&&S.p.uvsrc==="om-corr-nofile"
+       ? " <b>You're near home but there's no DMI cache to read.</b> Either the job hasn't run "
+         +"yet, or data/dmi.json is missing."
+       : fx&&S.p.uvsrc==="om-corr"
+         ? " You're <b>"+Math.round(kmFromHome())+" km</b> from home, past the "+HOME_KM
+           +" km mark, so the cached DMI data doesn't apply here."
+         : "")
+   +" Near home, today's curve is DMI's own hourly clear-sky UV and later days take their shape "
+   +"from Open-Meteo rescaled to DMI's daily UVmax — fetched server-side by a scheduled job, "
+   +"because dmi.dk won't serve the browser directly. Further out, everything falls back to "
+   +"Open-Meteo scaled by your correction factor, currently <b>"
+   +(+S.p.omCorr>0?+S.p.omCorr:0.85)+"</b>. Cloud stays your call, from the chips. "
    +"Requests send only your coordinates. "
    +"Everything works offline without it.</p>";
   const ub=el("button","btn ghost sm","Fetch UV forecast (7 days)");
@@ -1383,6 +1399,7 @@ function vSet(v){
   const sv=el("button","btn","Save");
   sv.onclick=()=>{p.skin=$("#sk").value;p.lat=+$("#la").value;p.lon=+$("#lo").value;
     p.tz=+$("#tz").value;p.peak=+$("#pk").value;p.base=+$("#bs").value;
+    p.omCorr=+$("#oc").value>0?+$("#oc").value:0.85;
     p.h=+$("#hh").value||180;p.w=+$("#ww").value||75;save(true);
     toast("Saved.");render();};
   v.appendChild(sv);
