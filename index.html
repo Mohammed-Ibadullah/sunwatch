@@ -606,33 +606,64 @@ function locate(){
       e=>no(e), {enableHighAccuracy:false,timeout:12000,maximumAge:6e5});
   });
 }
+/* ---- DMI's own UV product ------------------------------------------
+   DMI publishes UV directly, which no weather model in Open-Meteo does:
+     nuv_clear_cloud  hourly clear-sky and all-sky UV for today
+     json/id/<ID>     UVmax per day, ten days out
+     ninjo2dmidk      resolves coordinates to a DMI location ID
+   Only today is hourly. Later days are a single daily maximum, so the shape
+   of the day still has to come from Open-Meteo; DMI just sets its height.  */
+async function dmiJSON(url){
+  const r=await fetch(url,{cache:"no-store"});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+}
+async function dmiId(lat,lon){
+  if(S.p.dmiId&&S.p.dmiIdFor===lat.toFixed(2)+","+lon.toFixed(2)) return S.p.dmiId;
+  const j=await dmiJSON("https://www.dmi.dk/NinJo2DmiDk/ninjo2dmidk?cmd=llj&lon="
+    +lon.toFixed(2)+"&lat="+lat.toFixed(2)+"&hrs=24");
+  if(!j||!j.id) throw new Error("no DMI id");
+  S.p.dmiId=String(j.id); S.p.dmiIdFor=lat.toFixed(2)+","+lon.toFixed(2);
+  S.p.dmiCity=j.city||"";
+  return S.p.dmiId;
+}
+/* hourly clear-sky and all-sky UV for today, as 24-slot arrays */
+async function dmiToday(){
+  const j=await dmiJSON("https://www.dmi.dk/dmidk_byvejrWS/rest/json/nuv_clear_cloud");
+  const L=j&&j.List; if(!L||!L.length) throw new Error("no DMI hourly UV");
+  const cs=Array(24).fill(null), all=Array(24).fill(null);
+  let date=null;
+  for(const e of L){
+    if(!e.Time) continue;
+    date=date||e.Time.slice(0,10);
+    const hr=parseInt(e.Time.slice(11,13),10);
+    if(hr>=0&&hr<24){ cs[hr]=+e.UVclear; all[hr]=+e.UVcloud; }
+  }
+  for(let i=0;i<24;i++) if(cs[i]==null){ cs[i]=0; all[i]=0; }   // pre-dawn gap
+  if(!cs.some(v=>v>0)) throw new Error("DMI hourly UV all zero");
+  return {date:date,cs:cs,all:all};
+}
+/* daily clear-sky UVmax, ten days out */
+async function dmiMax(lat,lon){
+  const id=await dmiId(lat,lon);
+  const j=await dmiJSON("https://www.dmi.dk/dmidk_byvejrWS/rest/json/id/"+id);
+  if(!j||!Array.isArray(j.UVs)) throw new Error("no DMI UVmax");
+  const m={}; for(const u of j.UVs) if(u.Date&&u.UVmax!=null) m[u.Date]=+u.UVmax;
+  return m;
+}
+
 async function pullDays(n){
   const p=S.p;
-  /* dmi_seamless is DMI's own HARMONIE AROME DINI regional model, 2 km over
-     Denmark, re-served by Open-Meteo, falling back to ECMWF IFS HRES past its
-     native ~2.5-day horizon. Much closer to home than the GFS global grid the
-     default uses. Not identical to dmi.dk's own UV chart - that product uses a
-     dedicated erythemal radiative-transfer scheme - so expect it to track the
-     DMI site more closely than GFS did, not to match it number for number.
-     If the regional model does not return a usable clear-sky series, fall back
-     to the default source rather than losing the forecast entirely.  */
-  const base="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
+  /* Open-Meteo supplies the shape of each day plus cloud and rain. DMI then
+     sets the height: its hourly curve replaces today outright, and each later
+     day is scaled so its peak matches DMI's UVmax. The shape is a smooth
+     function of solar geometry and is the part a global model gets right; the
+     magnitude depends on ozone and aerosol, which is what DMI measures.  */
+  const u="https://api.open-meteo.com/v1/forecast?latitude="+p.lat+"&longitude="+p.lon
     +"&hourly=uv_index,uv_index_clear_sky,cloud_cover,precipitation_probability"
     +"&forecast_days="+n+"&timezone=auto";
-  let j=null, src="dmi";
-  for(const attempt of ["&models=dmi_seamless",""]){
-    try{
-      const r=await fetch(base+attempt);
-      if(!r.ok) throw new Error("HTTP "+r.status);
-      const g=await r.json();
-      if(g.hourly&&g.hourly.uv_index_clear_sky
-         &&g.hourly.uv_index_clear_sky.some(v=>v!=null&&v>0)){ j=g; break; }
-    }catch(e){}
-    src="default";
-  }
-  if(!j) throw new Error("no usable forecast");
-  S.p.uvsrc=src;
-  const hh=j.hourly, tz=j.utc_offset_seconds/3600, D=[];
+  const r=await fetch(u); if(!r.ok) throw new Error("HTTP "+r.status);
+  const j=await r.json(), hh=j.hourly, tz=j.utc_offset_seconds/3600, D=[];
   for(let d=0;d<n;d++){
     const o=d*24; if(hh.time[o]==null) break;
     D.push({date:hh.time[o].slice(0,10),tz:tz,
@@ -640,6 +671,29 @@ async function pullDays(n){
       cc:hh.cloud_cover.slice(o,o+24),
       pp:(hh.precipitation_probability||[]).slice(o,o+24)});
   }
+  if(!D.length) throw new Error("no usable forecast");
+
+  const [tR,mR]=await Promise.allSettled([dmiToday(),dmiMax(p.lat,p.lon)]);
+  let hourly=false, scaled=0;
+
+  if(tR.status==="fulfilled"){                      // today, measured hourly
+    const t=tR.value, day=D.find(x=>x.date===t.date);
+    if(day){ day.cs=t.cs; day.all=t.all; day.dmi="hourly"; hourly=true; }
+  }
+  if(mR.status==="fulfilled"){                      // later days, peak-matched
+    const mx=mR.value;
+    for(const day of D){
+      if(day.dmi==="hourly") continue;
+      const want=mx[day.date]; if(!(want>0)) continue;
+      const have=Math.max(...day.cs.filter(v=>v!=null));
+      if(!(have>0)) continue;
+      const k=want/have;
+      day.cs=day.cs.map(v=>v==null?null:+(v*k).toFixed(3));
+      day.all=day.all.map(v=>v==null?null:+(v*k).toFixed(3));
+      day.dmi="scaled"; day.k=+k.toFixed(3); scaled++;
+    }
+  }
+  S.p.uvsrc = hourly&&scaled ? "dmi" : hourly ? "dmi-today" : scaled ? "dmi-scaled" : "om";
   S.p.days={got:Date.now(),d:D};
   const o3=estimateO3(D[0]); if(o3) S.p.o3=o3;
   S.p.peak=0;                              // the real curve supersedes the hand calibration
@@ -647,8 +701,13 @@ async function pullDays(n){
   return D;
 }
 async function getForecast(){ await pullDays(7); return fcDay(today()); }
-const UVSRC={dmi:"DMI regional model",default:"Open-Meteo global model"};
-const uvsrcName=()=>fcDay(today())?(UVSRC[S.p.uvsrc]||UVSRC.default):"built-in clear-sky model";
+const UVSRC={dmi:"DMI measured UV",
+             "dmi-today":"DMI hourly today, Open-Meteo beyond",
+             "dmi-scaled":"Open-Meteo shape, DMI peaks",
+             om:"Open-Meteo only"};
+const uvsrcName=()=>fcDay(today())?(UVSRC[S.p.uvsrc]||UVSRC.om):"built-in clear-sky model";
+const uvsrcTag=()=>{const s=S.p.uvsrc;
+  return !fcDay(today())?"modelled":s==="om"?"O-M":s==="dmi"?"DMI":"DMI*";};
 function fcAge(){
   const c=S.p.days, d=fcDay(today());
   if(!c||!d) return null;
@@ -794,8 +853,7 @@ function vSun(v){
   if(S.s) return S.s.ended?vDone(v):vLive(v);
   $("#ttl").textContent="New session"; $("#sub").textContent="Check what the sun can actually reach";
   const now=uvAt(Date.now(),draft.cloud,false);
-  $("#hdr-r").textContent="UV "+now.uvi.toFixed(1)+" · "+(fcDay(today())
-    ?(S.p.uvsrc==="dmi"?"DMI":"global"):"modelled");
+  $("#hdr-r").textContent="UV "+now.uvi.toFixed(1)+" · "+uvsrcTag();
 
   const c1=el("div","card");
   c1.innerHTML="<label class='f'><span>Cloud right now</span></label>";
@@ -890,8 +948,7 @@ function vLive(v){
   $("#ttl").textContent=s.paused?"Paused":(s.side==="front"?"Front up":"Back up");
   $("#sub").textContent=s.posture+" · skin "+s.skin+(s.paused?" · nothing accruing":"");
   const u=uvAt(Date.now(),s.cloud,s.blocked);
-  $("#hdr-r").textContent="UV "+u.uvi.toFixed(1)+" · "+(fcDay(today())
-    ?(S.p.uvsrc==="dmi"?"DMI":"global"):"modelled");
+  $("#hdr-r").textContent="UV "+u.uvi.toFixed(1)+" · "+uvsrcTag();
 
   // banner
   const f=peakFrac();
@@ -1105,8 +1162,7 @@ function vFc(v){
   const zones=Object.keys(ZONES).filter(k=>draft.zones.includes(k)&&!hid.includes(k));
   const zs=zones.length?zones:Object.keys(ZONES);
   FCDAY=Math.min(FCDAY,days.length-1);
-  $("#sub").textContent=days.length+" days · "+(S.p.uvsrc==="dmi"?"DMI":"global model")
-    +" · skin "+S.p.skin+" · flat";
+  $("#sub").textContent=days.length+" days · "+uvsrcTag()+" · skin "+S.p.skin+" · flat";
 
   const ds=el("div","daysel");
   days.forEach((d,i)=>{
@@ -1146,8 +1202,10 @@ function vFc(v){
      +"<div><div class='k'>Expected</div><div class='v'>"+cm(b.iu)+"<i>IU</i></div></div>"
      +"<div><div class='k'>If it clears</div><div class='v'>"
        +(so.any?cm(so.best.iu):"—")+"<i>IU</i></div></div>"
-     +"<div><div class='k'>Cloud then</div><div class='v'>"
-       +(d.cc[Math.round(b.t)]??"—")+"<i>%</i></div></div>"
+     +(d.dmi==="scaled"&&d.k
+       ? "<div><div class='k'>DMI scale</div><div class='v'>"+d.k.toFixed(2)+"<i>×</i></div></div>"
+       : "<div><div class='k'>Cloud then</div><div class='v'>"
+         +(d.cc[Math.round(b.t)]??"—")+"<i>%</i></div></div>")
      +"<div><div class='k'>Latest start</div><div class='v'>"
        +(sc.last?hhmm(sc.last.t):"—")+"<i>"+(sc.last?dur(sc.last.mins):"")+"</i></div></div></div>";
     v.appendChild(g);
@@ -1303,12 +1361,16 @@ function vSet(v){
        +Math.max(...fx.cs.filter(x=>x!=null)).toFixed(1)+"</b>. This overrides the model."
        +(S.p.o3?" Ozone works out at <b>"+S.p.o3+" DU</b> from that curve, which sets how much "
          +"UVB survives the trip.":""))
-   +(fx&&S.p.uvsrc==="default"
-     ? " <b>DMI's own model didn't return usable data, so this is the global fallback.</b>"
-     : "")
-   +" Fetching goes through Open-Meteo, asking for DMI's HARMONIE AROME regional model first "
-   +"(2 km over Denmark) and falling back to the global model only if that fails. "
-   +"It sends only your coordinates. "
+   +(fx&&S.p.uvsrc==="om"
+     ? " <b>DMI didn't respond, so this is Open-Meteo alone.</b> If that keeps happening in the "
+       +"browser it is almost certainly CORS: dmi.dk serves these endpoints for its own site and "
+       +"may not allow other origins to read them."
+     : fx&&S.p.uvsrc!=="dmi"
+       ? " <b>Only part of the DMI data came through.</b>":"")
+   +" Today's curve is DMI's own hourly clear-sky UV; later days take their shape from "
+   +"Open-Meteo and are rescaled so each peak matches DMI's daily UVmax"
+   +(S.p.dmiCity?" for "+esc(S.p.dmiCity):"")+". Cloud stays your call, from the chips. "
+   +"Requests send only your coordinates. "
    +"Everything works offline without it.</p>";
   const ub=el("button","btn ghost sm","Fetch UV forecast (7 days)");
   ub.style.marginTop="12px";
